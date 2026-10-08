@@ -1,0 +1,23 @@
+# Private runtime data (may contain camera URLs or credentials)
+config/
+data/
+logs/
+backups/
+*.log
+.env
+.env.*
+
+# Python and test artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Sign in · Multi Camera Printer Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <span class="brand-mark large" aria-hidden="true"></span>
+    <h1>Multi Camera Printer Dashboard</h1>
+    <p>Sign in to view and manage cameras on this computer.</p>
+    <form action="/login" method="post">
+      <label>Username<input name="username" autocomplete="username" required autofocus></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="error">{{ERROR}}</p>
+      <button class="primary wide" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

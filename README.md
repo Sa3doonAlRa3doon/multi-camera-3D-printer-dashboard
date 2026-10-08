@@ -296,4 +296,3 @@ Development verification cannot simulate every physical Raspberry Pi boot, USB d
 ## License
 
 MIT; see [LICENSE](LICENSE).
-

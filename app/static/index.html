@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Multi Camera Printer Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div><strong>Multi Camera Printer Dashboard</strong><small id="version"></small></div>
+    </div>
+    <div class="toolbar">
+      <div class="view-switcher" role="group" aria-label="Dashboard view">
+        <button id="cameras-view-button" class="selected" type="button">Cameras</button>
+        <button id="printer-view-button" type="button">3D printer</button>
+      </div>
+      <label id="grid-control" class="grid-control">Grid <input id="grid-size" type="range" min="1" max="4" value="2"><output id="grid-output">2 columns</output></label>
+      <button id="add-camera" class="primary">Add camera</button>
+      <button id="settings-toggle" aria-expanded="false" aria-controls="settings">Settings</button>
+    </div>
+  </header>
+
+  <main id="camera-view">
+    <div id="empty-state" class="empty-state" hidden>
+      <div class="empty-icon">＋</div>
+      <h1>Add your first camera</h1>
+      <p>Connect a USB camera or add an RTSP, HTTP, or MJPEG stream URL.</p>
+      <button class="primary" data-add-camera>Add camera</button>
+    </div>
+    <section id="camera-grid" class="camera-grid" aria-live="polite"></section>
+  </main>
+
+  <main id="printer-view" class="printer-view" hidden>
+    <div class="printer-heading">
+      <div><span class="eyebrow">Integrated workspace</span><h1 id="printer-title">3D Printer</h1><p>Monitor and control the printer without leaving this protected dashboard.</p></div>
+      <div class="printer-actions"><button id="printer-reload" type="button">Reload</button><a id="printer-open" class="button-link primary" target="_blank" rel="noopener noreferrer">Open full page</a></div>
+    </div>
+    <div id="printer-empty" class="printer-empty">
+      <h2>Connect your printer dashboard</h2>
+      <p>Open Settings and enter its local HTTP or HTTPS dashboard URL. A common Creality/Fluidd example is <code>http://printer-ip:4408/#/</code>.</p>
+      <button id="printer-configure" class="primary" type="button">Open settings</button>
+    </div>
+    <div id="printer-frame-wrap" class="printer-frame-wrap" hidden>
+      <iframe id="printer-frame" title="3D printer dashboard" loading="lazy" referrerpolicy="no-referrer"></iframe>
+      <p class="embed-help">If the printer page is blank or says it refused to connect, that dashboard blocks embedding. Use <strong>Open full page</strong>; camera viewing and recording still work normally.</p>
+    </div>
+  </main>
+
+  <aside id="settings" class="drawer" aria-hidden="true">
+    <div class="drawer-head"><div><h2>Dashboard settings</h2><p>Configure cameras, capture, printer, startup, and network access.</p></div><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></div>
+    <p id="camera-limit" class="camera-limit">0 of 6 cameras configured</p>
+    <button id="detect-usb" class="wide">Detect USB cameras</button>
+    <div id="detected-list" class="detected-list"></div>
+    <div id="camera-list" class="camera-list"></div>
+    <section class="capture-settings" aria-labelledby="capture-title">
+      <h3 id="capture-title">Timelapse defaults</h3>
+      <p>Timelapse frames stay in this browser until Stop &amp; save creates a WebM download on this viewing device.</p>
+      <div class="control-grid">
+        <label>Capture every (seconds)<input id="timelapse-interval" type="number" min="2" max="3600" step="1" value="10"></label>
+        <label>Playback FPS<input id="timelapse-fps" type="number" min="1" max="60" step="1" value="30"></label>
+      </div>
+      <label>Maximum frames<input id="timelapse-max-frames" type="number" min="60" max="10000" step="1" value="3000"></label>
+      <p class="help">The browser tab must remain open. Longer jobs use more laptop/phone memory; increase the interval for long prints.</p>
+    </section>
+    <section class="printer-settings" aria-labelledby="printer-settings-title">
+      <h3 id="printer-settings-title">3D printer dashboard</h3>
+      <p>The URL is saved only in this installation's private configuration. Do not include credentials in it.</p>
+      <label>Printer name<input id="printer-name" maxlength="80" placeholder="3D Printer"></label>
+      <label>Dashboard URL<input id="printer-url" maxlength="2048" inputmode="url" placeholder="http://printer-ip:4408/#/"></label>
+      <div class="network-actions"><button id="printer-save" type="button" class="primary">Save printer</button><button id="printer-clear" type="button">Clear</button></div>
+      <p id="printer-status" class="help" role="status"></p>
+    </section>
+    <section class="startup-settings" aria-labelledby="startup-title">
+      <h3 id="startup-title">Automatic startup</h3>
+      <p id="autostart-description">Checking the current startup mode…</p>
+      <div class="startup-options" role="group" aria-label="Startup mode">
+        <button id="autostart-auto" type="button">Automatic</button>
+        <button id="autostart-manual" type="button">Manual</button>
+      </div>
+      <p id="autostart-status" class="help" role="status"></p>
+      <div id="autostart-command-wrap" class="admin-command" hidden>
+        <p>Run this once in the Pi/Linux terminal. It may ask for your sudo password, briefly disconnect this page, then start and verify the systemd service. Reopen the viewer and press Refresh:</p>
+        <code id="autostart-command"></code>
+      </div>
+      <button id="autostart-refresh" type="button" class="wide ghost">Refresh startup status</button>
+    </section>
+    <section class="network-settings" aria-labelledby="network-title">
+      <h3 id="network-title">Network access</h3>
+      <p>The IP address identifies the device. The port is the four-digit number after the colon, such as <code>1010</code>.</p>
+      <label>Saved preferred port<input id="network-port" type="text" inputmode="numeric" minlength="4" maxlength="4" pattern="[0-9]{4}" placeholder="1010"></label>
+      <div class="network-actions">
+        <button id="network-save" type="button" class="primary">Save port</button>
+        <button id="network-auto" type="button">Choose automatically</button>
+      </div>
+      <p id="network-status" class="help" role="status">Loading network addresses…</p>
+      <div id="network-restart" class="restart-note" hidden></div>
+      <div class="access-urls">
+        <strong>Current access URLs</strong>
+        <ul id="network-urls"></ul>
+      </div>
+      <p class="help">The viewer listens on all interfaces so LAN and Tailscale work together. For a permanent LAN IP, reserve the Pi's address in your router. Tailscale must already be installed and connected.</p>
+      <button id="network-refresh" type="button" class="wide ghost">Refresh addresses</button>
+    </section>
+    <div class="drawer-footer"><button id="logout" class="danger ghost">Sign out</button></div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <dialog id="camera-dialog">
+    <form id="camera-form" method="dialog">
+      <div class="dialog-head"><div><h2 id="dialog-title">Add camera</h2><p>Credentials stay in this computer's private data folder.</p></div><button type="button" id="dialog-close" class="icon-button" aria-label="Close">×</button></div>
+      <input id="camera-id" type="hidden">
+      <label>Camera name<input id="camera-name" maxlength="80" required placeholder="Front door"></label>
+      <label>Camera type<select id="camera-type"><option value="usb">USB webcam</option><option value="rtsp">RTSP network camera</option><option value="http">HTTP / MJPEG stream</option></select></label>
+      <label id="source-label">Device or stream URL<input id="camera-source" maxlength="2048" required placeholder="0"></label>
+      <p id="source-help" class="help">Windows usually uses an index such as 0. Linux can use /dev/video0.</p>
+      <fieldset class="video-controls">
+        <legend>Video adjustments</legend>
+        <div class="control-grid">
+          <label>Output resolution
+            <select id="camera-resolution">
+              <option value="0x0">Source / original</option>
+              <option value="640x480">640 × 480</option>
+              <option value="1280x720">1280 × 720 (HD)</option>
+              <option value="1920x1080">1920 × 1080 (Full HD)</option>
+              <option value="2560x1440">2560 × 1440</option>
+              <option value="3840x2160">3840 × 2160 (4K)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </label>
+          <label>Target FPS <span class="label-hint">0 = source rate</span><input id="camera-fps" type="number" min="0" max="60" step="1" value="0" required></label>
+          <label>Rotate
+            <select id="camera-rotation">
+              <option value="0">Normal</option>
+              <option value="90">90° right</option>
+              <option value="270">90° left</option>
+              <option value="180">180° upside down</option>
+            </select>
+          </label>
+          <label>Flip
+            <select id="camera-flip">
+              <option value="none">None</option>
+              <option value="horizontal">Horizontal / mirror</option>
+              <option value="vertical">Vertical</option>
+              <option value="both">Horizontal + vertical</option>
+            </select>
+          </label>
+        </div>
+        <div id="custom-resolution" class="custom-resolution" hidden>
+          <label>Width<input id="camera-width" type="number" min="160" max="3840" step="1" value="1280"></label>
+          <span aria-hidden="true">×</span>
+          <label>Height<input id="camera-height" type="number" min="120" max="2160" step="1" value="720"></label>
+        </div>
+        <p class="help">Adjustments are saved for this camera. A 90° rotation swaps the displayed width and height.</p>
+      </fieldset>
+      <div id="credentials" class="credentials" hidden>
+        <label>Username <input id="camera-username" autocomplete="off" placeholder="Optional"></label>
+        <label>Password <input id="camera-password" type="password" autocomplete="new-password" placeholder="Optional"></label>
+        <label class="check"><input id="clear-credentials" type="checkbox"> Clear previously saved credentials</label>
+      </div>
+      <label class="check"><input id="camera-enabled" type="checkbox" checked> Camera enabled</label>
+      <p id="form-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="dialog-cancel">Cancel</button><button type="submit" class="primary">Save camera</button></div>
+    </form>
+  </dialog>
+
+  <template id="camera-card-template">
+    <article class="camera-card">
+      <div class="stream-wrap"><img class="stream" alt=""><div class="stream-overlay"><span class="status-dot"></span><span class="status-text">Connecting</span></div></div>
+      <footer>
+        <div><h2 class="camera-title"></h2><p class="camera-type"></p></div>
+        <div class="card-actions">
+          <button class="snapshot" title="Save a picture on this viewing device">Screenshot</button>
+          <button class="record" title="Record on this viewing device">Record</button>
+          <button class="timelapse" title="Create a timelapse on this viewing device">Timelapse</button>
+          <button class="fullscreen" title="View fullscreen">Fullscreen</button>
+        </div>
+      </footer>
+    </article>
+  </template>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
