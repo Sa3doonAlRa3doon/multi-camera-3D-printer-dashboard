@@ -42,7 +42,9 @@ User={user}
 WorkingDirectory={root}
 Environment={_systemd_quote(f"MCPD_HOME={root}")}
 ExecStart={_systemd_quote(python)} -m app
-Restart=on-failure
+# A clean but unexpected server exit must not leave the dashboard offline.
+# systemctl stop still suppresses restarting an explicitly stopped service.
+Restart=always
 RestartSec=5
 
 [Install]
@@ -127,13 +129,13 @@ def enable_autostart(
         commands = [
             _sudo(["install", "-m", "644", str(service_source), str(service_target)], non_interactive),
             _sudo(["systemctl", "daemon-reload"], non_interactive),
+            _sudo(["systemctl", "enable", LINUX_SERVICE_NAME], non_interactive),
             *(
-                [_sudo(["systemctl", "reset-failed", LINUX_SERVICE_NAME], non_interactive)]
+                [
+                    _sudo(["systemctl", "reset-failed", LINUX_SERVICE_NAME], non_interactive),
+                    _sudo(["systemctl", "restart", LINUX_SERVICE_NAME], non_interactive),
+                ]
                 if start_now else []
-            ),
-            _sudo(
-                ["systemctl", "enable", *(["--now"] if start_now else []), LINUX_SERVICE_NAME],
-                non_interactive,
             ),
         ]
         for command in commands:

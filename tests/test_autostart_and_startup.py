@@ -25,7 +25,7 @@ def test_linux_autostart_is_boot_system_service_with_restart(tmp_path):
     text = linux_service_text(tmp_path, username="camera-user")
     assert "User=camera-user" in text
     assert "WantedBy=multi-user.target" in text
-    assert "Restart=on-failure" in text
+    assert "Restart=always" in text
     assert "StartLimitIntervalSec=0" in text
     assert "After=network-online.target" in text
     assert f"WorkingDirectory={tmp_path.resolve()}" in text
@@ -83,7 +83,12 @@ def test_linux_start_now_is_enabled_started_and_verified(monkeypatch, tmp_path):
     ok, detail = enable_autostart(tmp_path, start_now=True)
     assert ok is True
     assert "running now" in detail
-    assert any("--now" in command for command in calls)
+    assert not any("--now" in command for command in calls)
+    service = "multi-camera-printer-dashboard.service"
+    assert any(command[-2:] == ["restart", service] for command in calls)
+    enable_index = next(index for index, command in enumerate(calls) if command[-2:] == ["enable", service])
+    restart_index = next(index for index, command in enumerate(calls) if command[-2:] == ["restart", service])
+    assert enable_index < restart_index
     assert "ExecStart=" in (tmp_path / "multi-camera-printer-dashboard.service").read_text(encoding="utf-8")
 
 

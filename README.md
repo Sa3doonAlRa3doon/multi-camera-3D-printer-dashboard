@@ -240,7 +240,7 @@ Raspberry Pi OS/Linux:
 ./.venv/bin/python manage.py remove-autostart
 ```
 
-`enable-autostart` regenerates and verifies the current registration. Windows uses the current user's sign-in task. Linux uses a system service that starts at boot. `disable-autostart --keep-running` disables the next automatic launch without stopping the current Linux service. `remove-autostart` removes the Windows task or Linux unit.
+`enable-autostart` regenerates the current registration. On Linux it reloads systemd, enables the service, explicitly restarts it, and verifies that it stays active. Windows uses the current user's sign-in task. Linux uses a system service that starts at boot. `disable-autostart --keep-running` disables the next automatic launch without stopping the current Linux service. `remove-autostart` removes the Windows task or Linux unit.
 
 ## Troubleshooting
 
@@ -253,6 +253,18 @@ Raspberry Pi OS/Linux:
 - **Recording/timelapse unavailable:** use a current Chrome, Edge, Chromium, or Firefox browser with MediaRecorder/canvas capture support.
 - **Saved port changed:** the original port was occupied at launch; read the startup output/log for the selected fallback.
 - **Linux autostart inactive:** run `./.venv/bin/python manage.py enable-autostart`, then inspect `sudo systemctl status multi-camera-printer-dashboard.service --no-pager --full` and `sudo journalctl -u multi-camera-printer-dashboard.service -n 100 --no-pager`.
+
+### Repair autostart after upgrading from 1.0.0
+
+Run this from the installed application folder. It preserves cameras, login details, the printer URL, port, recordings, and logs:
+
+```bash
+./.venv/bin/python manage.py update
+./.venv/bin/python manage.py enable-autostart
+./.venv/bin/python manage.py status
+```
+
+The final status must say `enabled and running (system boot)`. Version 1.0.1 changed the Linux repair sequence to explicitly reload, enable, restart, and verify the service instead of relying on `systemctl enable --now` to refresh an existing unit.
 
 ## Uninstall
 
