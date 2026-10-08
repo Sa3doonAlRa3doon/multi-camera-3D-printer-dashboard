@@ -148,6 +148,34 @@ def test_printer_dashboard_settings_are_private_authenticated_and_validated(tmp_
         client.__exit__(None, None, None)
 
 
+def test_printer_layer_status_uses_private_dashboard_configuration(monkeypatch, tmp_path):
+    store, client, headers = authenticated_client(tmp_path)
+    try:
+        settings = store.load_settings()
+        settings["printer_dashboard_url"] = "http://printer.local:4408/#/"
+        store.save_settings(settings)
+        seen = []
+        monkeypatch.setattr(
+            main_module,
+            "query_printer_status",
+            lambda url: seen.append(url) or {
+                "available": True,
+                "state": "printing",
+                "filename": "part.gcode",
+                "current_layer": 7,
+                "total_layer": 50,
+                "layer_supported": True,
+            },
+        )
+        response = client.get("/api/printer/status")
+        assert response.status_code == 200
+        assert response.json()["current_layer"] == 7
+        assert seen == ["http://printer.local:4408/#/"]
+        assert headers
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_autostart_can_be_changed_from_authenticated_settings(monkeypatch, tmp_path):
     current = {"enabled": False}
 

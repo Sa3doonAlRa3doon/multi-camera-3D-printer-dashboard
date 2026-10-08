@@ -28,6 +28,7 @@ from .cameras import CameraManager, detect_usb_cameras, source_for_capture
 from .config import ConfigStore, verify_password
 from .network import lan_addresses, tailscale_addresses
 from .ports import INVALID_PORT_MESSAGE, automatic_port, is_port_available, is_valid_custom_port
+from .printer import PrinterStatusError, query_printer_status
 
 MAX_CAMERAS = 6
 
@@ -294,6 +295,19 @@ def create_app(
             "url": url,
             "configured": bool(url),
         }
+
+    @app.get("/api/printer/status")
+    async def get_printer_status(_: None = Depends(require_auth)) -> dict:
+        dashboard_url = str(store.load_settings().get("printer_dashboard_url", ""))
+        if not dashboard_url:
+            return {
+                "available": False,
+                "error": "Configure the Fluidd/Moonraker dashboard URL before using layer timelapse.",
+            }
+        try:
+            return await run_in_threadpool(lambda: query_printer_status(dashboard_url))
+        except PrinterStatusError as exc:
+            return {"available": False, "error": str(exc)}
 
     @app.post("/api/network")
     async def set_network(payload: NetworkPayload, _: None = Depends(require_csrf)) -> dict:

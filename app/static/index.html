@@ -58,13 +58,19 @@
     <div id="camera-list" class="camera-list"></div>
     <section class="capture-settings" aria-labelledby="capture-title">
       <h3 id="capture-title">Timelapse defaults</h3>
-      <p>Timelapse frames stay in this browser until Stop &amp; save creates a WebM download on this viewing device.</p>
+      <p>Timelapse frames stay in this browser until the print completes or Stop &amp; save creates a WebM download on this viewing device.</p>
+      <label>Capture trigger
+        <select id="timelapse-mode">
+          <option value="layer" selected>Every printer layer</option>
+          <option value="interval">Time interval</option>
+        </select>
+      </label>
       <div class="control-grid">
-        <label>Capture every (seconds)<input id="timelapse-interval" type="number" min="2" max="3600" step="1" value="10"></label>
+        <label id="timelapse-interval-label" hidden>Capture every (seconds)<input id="timelapse-interval" type="number" min="2" max="3600" step="1" value="10"></label>
         <label>Playback FPS<input id="timelapse-fps" type="number" min="1" max="60" step="1" value="30"></label>
       </div>
       <label>Maximum frames<input id="timelapse-max-frames" type="number" min="60" max="10000" step="1" value="3000"></label>
-      <p class="help">The browser tab must remain open. Longer jobs use more laptop/phone memory; increase the interval for long prints.</p>
+      <p id="timelapse-mode-help" class="help">Layer mode reads the configured Fluidd/Moonraker dashboard and captures exactly once when its current layer changes. The browser tab must remain open.</p>
     </section>
     <section class="printer-settings" aria-labelledby="printer-settings-title">
       <h3 id="printer-settings-title">3D printer dashboard</h3>

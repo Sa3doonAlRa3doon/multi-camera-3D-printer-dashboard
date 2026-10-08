@@ -144,18 +144,29 @@ function timelapseOptions() {
     return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, Math.round(number))) : fallback;
   };
   return {
+    mode: $("#timelapse-mode").value === "interval" ? "interval" : "layer",
     intervalSeconds: bounded($("#timelapse-interval").value, 2, 3600, 10),
     playbackFps: bounded($("#timelapse-fps").value, 1, 60, 30),
     maxFrames: bounded($("#timelapse-max-frames").value, 60, 10000, 3000),
   };
 }
 
+function updateTimelapseMode() {
+  const layerMode = $("#timelapse-mode").value === "layer";
+  $("#timelapse-interval-label").hidden = layerMode;
+  $("#timelapse-mode-help").textContent = layerMode
+    ? "Layer mode reads the configured Fluidd/Moonraker dashboard and captures exactly once when its current layer changes. The browser tab must remain open."
+    : "Interval mode captures on a timer. The browser tab must remain open; longer jobs use more laptop/phone memory.";
+}
+
 function saveTimelapseOptions() {
   const options = timelapseOptions();
+  $("#timelapse-mode").value = options.mode;
   $("#timelapse-interval").value = String(options.intervalSeconds);
   $("#timelapse-fps").value = String(options.playbackFps);
   $("#timelapse-max-frames").value = String(options.maxFrames);
   localStorage.setItem("timelapseOptions", JSON.stringify(options));
+  updateTimelapseMode();
 }
 
 function updateTimelapseButton(cameraId) {
@@ -255,18 +266,83 @@ async function finishTimelapse(cameraId) {
   showToast(`Timelapse saved on this viewing device: ${filename}`);
 }
 
-function toggleTimelapse(camera, image) {
+async function updateLayerTimelapse(active, suppliedStatus = null) {
+  if (active.finishing || active.layerPollBusy) return;
+  active.layerPollBusy = true;
+  try {
+    const status = suppliedStatus || await api("/api/printer/status");
+    if (!status.available) {
+      if (!active.statusWarningShown) showToast(status.error || "Printer layer status is unavailable.");
+      active.statusWarningShown = true;
+      return;
+    }
+    active.statusWarningShown = false;
+    const stateName = String(status.state || "unknown").toLowerCase();
+    if (stateName === "printing") {
+      active.hasSeenPrinting = true;
+      const layer = Number(status.current_layer);
+      if (!Number.isInteger(layer) || layer < 0) {
+        if (!active.layerWarningShown) {
+          showToast("The printer is not reporting its current layer. Add SET_PRINT_STATS_INFO layer commands in the slicer.");
+          active.layerWarningShown = true;
+        }
+        return;
+      }
+      active.layerWarningShown = false;
+      const newPrint = active.filename && status.filename && active.filename !== status.filename;
+      const layerReset = active.lastLayer !== null && layer < active.lastLayer;
+      if (newPrint || layerReset) active.lastLayer = null;
+      active.filename = status.filename || active.filename;
+      if (active.lastLayer === null || layer > active.lastLayer) {
+        if (!active.captureBusy) {
+          active.lastLayer = layer;
+          captureTimelapseFrame(active);
+        }
+      }
+      return;
+    }
+    if (active.hasSeenPrinting && ["complete", "cancelled", "error"].includes(stateName)) {
+      showToast(`Print ${stateName}. Creating the layer timelapse now…`);
+      await finishTimelapse(active.camera.id);
+    }
+  } catch (error) {
+    if (!active.statusWarningShown) showToast(`Printer status: ${error.message}`);
+    active.statusWarningShown = true;
+  } finally {
+    active.layerPollBusy = false;
+  }
+}
+
+async function toggleTimelapse(camera, image) {
   if (timelapses.has(camera.id)) return finishTimelapse(camera.id);
   if (recordings.has(camera.id)) return showToast("Stop the normal recording before starting a timelapse for this camera.");
   if (typeof MediaRecorder === "undefined") return showToast("Timelapse video creation is not supported by this browser.");
   try { captureCanvas(image); } catch (error) { return showToast(error.message); }
   const options = timelapseOptions();
-  const active = { camera, image, options, frames: [], timer: null, captureBusy: false, finishing: false, width: 0, height: 0 };
+  let printerStatus = null;
+  if (options.mode === "layer") {
+    try { printerStatus = await api("/api/printer/status"); }
+    catch (error) { return showToast(`Printer status: ${error.message}`); }
+    if (!printerStatus.available) return showToast(printerStatus.error || "Printer layer status is unavailable.");
+  }
+  const active = {
+    camera, image, options, frames: [], timer: null, captureBusy: false, finishing: false,
+    width: 0, height: 0, layerPollBusy: false, lastLayer: null, filename: "",
+    hasSeenPrinting: false, statusWarningShown: false, layerWarningShown: false,
+  };
   timelapses.set(camera.id, active);
-  captureTimelapseFrame(active);
-  active.timer = setInterval(() => captureTimelapseFrame(active), options.intervalSeconds * 1000);
+  if (options.mode === "layer") {
+    await updateLayerTimelapse(active, printerStatus);
+    if (!timelapses.has(camera.id)) return;
+    active.timer = setInterval(() => updateLayerTimelapse(active), 1000);
+  } else {
+    captureTimelapseFrame(active);
+    active.timer = setInterval(() => captureTimelapseFrame(active), options.intervalSeconds * 1000);
+  }
   updateTimelapseButton(camera.id);
-  showToast(`Timelapse started: one frame every ${options.intervalSeconds} seconds. Keep this page open.`);
+  showToast(options.mode === "layer"
+    ? "Layer timelapse armed: one frame per printer layer. Keep this page open."
+    : `Timelapse started: one frame every ${options.intervalSeconds} seconds. Keep this page open.`);
 }
 
 function renderGrid() {
@@ -581,6 +657,7 @@ async function initialise() {
     const savedColumns = Number(localStorage.getItem("gridColumns") || 2); $("#grid-size").value = String(savedColumns); document.documentElement.style.setProperty("--grid-columns", savedColumns); $("#grid-output").textContent = `${savedColumns} column${savedColumns === 1 ? "" : "s"}`;
     let savedTimelapse = {};
     try { savedTimelapse = JSON.parse(localStorage.getItem("timelapseOptions") || "{}"); } catch (_) { /* keep defaults */ }
+    $("#timelapse-mode").value = savedTimelapse.mode === "interval" ? "interval" : "layer";
     $("#timelapse-interval").value = String(savedTimelapse.intervalSeconds || 10);
     $("#timelapse-fps").value = String(savedTimelapse.playbackFps || 30);
     $("#timelapse-max-frames").value = String(savedTimelapse.maxFrames || 3000);
@@ -598,7 +675,7 @@ $("#add-camera").addEventListener("click", () => openCameraDialog()); document.q
 $("#camera-type").addEventListener("change", updateTypeHelp); $("#camera-resolution").addEventListener("change", updateResolutionFields); $("#camera-form").addEventListener("submit", saveCamera); $("#dialog-close").addEventListener("click", () => dialog.close()); $("#dialog-cancel").addEventListener("click", () => dialog.close());
 $("#autostart-auto").addEventListener("click", () => changeAutostart(true)); $("#autostart-manual").addEventListener("click", () => changeAutostart(false)); $("#autostart-refresh").addEventListener("click", refreshAutostart);
 $("#network-save").addEventListener("click", () => saveNetwork("custom")); $("#network-auto").addEventListener("click", () => saveNetwork("automatic")); $("#network-refresh").addEventListener("click", refreshNetwork);
-for (const control of [$("#timelapse-interval"), $("#timelapse-fps"), $("#timelapse-max-frames")]) control.addEventListener("change", saveTimelapseOptions);
+for (const control of [$("#timelapse-mode"), $("#timelapse-interval"), $("#timelapse-fps"), $("#timelapse-max-frames")]) control.addEventListener("change", saveTimelapseOptions);
 $("#printer-save").addEventListener("click", () => savePrinter(false)); $("#printer-clear").addEventListener("click", () => savePrinter(true));
 $("#printer-configure").addEventListener("click", () => setDrawer(true));
 $("#printer-reload").addEventListener("click", () => { if (state.printer?.url) $("#printer-frame").src = state.printer.url; });

@@ -8,7 +8,7 @@ def _installed_version() -> str:
     try:
         return version_file.read_text(encoding="utf-8").strip()
     except OSError:
-        return "1.0.1"
+        return "1.1.0"
 
 
 __version__ = _installed_version()

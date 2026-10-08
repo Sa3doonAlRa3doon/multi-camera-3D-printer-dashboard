@@ -20,10 +20,14 @@ def test_camera_cards_offer_browser_side_timelapse_with_saved_controls():
     html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
     assert 'class="timelapse"' in html
-    for control in ("timelapse-interval", "timelapse-fps", "timelapse-max-frames"):
+    for control in ("timelapse-mode", "timelapse-interval", "timelapse-fps", "timelapse-max-frames"):
         assert f'id="{control}"' in html
+    assert "Every printer layer" in html
     assert 'localStorage.setItem("timelapseOptions"' in javascript
     assert "captureTimelapseFrame" in javascript
+    assert "updateLayerTimelapse" in javascript
+    assert 'api("/api/printer/status")' in javascript
+    assert "layer > active.lastLayer" in javascript
     assert "drawTimelapseFrame" in javascript
     assert "timelapse-${timestamp()}.webm" in javascript
 
