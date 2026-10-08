@@ -25,7 +25,7 @@ def test_linux_autostart_is_boot_system_service_with_restart(tmp_path):
     text = linux_service_text(tmp_path, username="camera-user")
     assert "User=camera-user" in text
     assert "WantedBy=multi-user.target" in text
-    assert "Restart=always" in text
+    assert "Restart=on-failure" in text
     assert "StartLimitIntervalSec=0" in text
     assert "After=network-online.target" in text
     assert f"WorkingDirectory={tmp_path.resolve()}" in text

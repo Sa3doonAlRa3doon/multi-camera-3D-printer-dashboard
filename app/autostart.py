@@ -42,9 +42,7 @@ User={user}
 WorkingDirectory={root}
 Environment={_systemd_quote(f"MCPD_HOME={root}")}
 ExecStart={_systemd_quote(python)} -m app
-# A clean but unexpected server exit must not leave the dashboard offline.
-# systemctl stop still suppresses restarting an explicitly stopped service.
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]
