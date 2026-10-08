@@ -1,5 +1,7 @@
 # Multi Camera Printer Dashboard
 
+[![test](https://github.com/Sa3doonAlRa3doon/multi-camera-3D-printer-dashboard/actions/workflows/test.yml/badge.svg)](https://github.com/Sa3doonAlRa3doon/multi-camera-3D-printer-dashboard/actions/workflows/test.yml)
+
 Multi Camera Printer Dashboard is a self-hosted, password-protected camera and 3D-printer workspace for Windows, Raspberry Pi OS, and desktop Linux. It displays up to six USB or network cameras at once, records screenshots/video/timelapses on the device viewing the page, and can embed a configurable printer web dashboard in a second tab.
 
 Version: **1.0.0**
