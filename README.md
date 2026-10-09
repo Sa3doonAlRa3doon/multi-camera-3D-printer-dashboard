@@ -4,7 +4,7 @@
 
 Multi Camera Printer Dashboard is a self-hosted, password-protected camera and 3D-printer workspace for Windows, Raspberry Pi OS, and desktop Linux. It displays up to six USB or network cameras at once, records screenshots/video/timelapses on the device viewing the page, and can embed a configurable printer web dashboard in a second tab.
 
-Version: **1.2.0**
+Version: **1.2.1**
 
 ## Features
 
@@ -287,6 +287,24 @@ Raspberry Pi OS/Linux:
 - **Recording/timelapse unavailable:** use a current Chrome, Edge, Chromium, Firefox, or Safari browser with MediaRecorder/canvas capture support. The app detects WebM/MP4 support, waits for final encoder data, rejects empty files, and shows the downloaded file size.
 - **Saved port changed:** the original port was occupied at launch; read the startup output/log for the selected fallback.
 - **Linux autostart inactive:** run `./.venv/bin/python manage.py enable-autostart`, then inspect `sudo systemctl status multi-camera-printer-dashboard.service --no-pager --full` and `sudo journalctl -u multi-camera-printer-dashboard.service -n 100 --no-pager`.
+- **An upgrade from 1.1.0 reports `Could not stop ... timeout after 10 seconds`:** a connected camera stream can keep the old server in graceful shutdown. Run the recovery block below once. Version 1.2.1 stops the systemd unit first, applies a bounded graceful shutdown, and force-stops only the remaining service processes when required.
+
+### One-time recovery from the version 1.1.0 shutdown timeout
+
+Run these commands from `~/Documents/MultiCameraPrinterDashboard`. They stop only this dashboard service and preserve `config/`, `data/`, `logs/`, accounts, cameras, and recordings:
+
+```bash
+cd ~/Documents/MultiCameraPrinterDashboard
+sudo systemctl stop --no-block multi-camera-printer-dashboard.service
+sudo systemctl kill --kill-who=all --signal=SIGKILL multi-camera-printer-dashboard.service
+sudo systemctl reset-failed multi-camera-printer-dashboard.service
+sudo rm -f data/server.pid
+./.venv/bin/python manage.py update
+./.venv/bin/python manage.py enable-autostart
+./.venv/bin/python manage.py status
+```
+
+If `systemctl kill` says that the unit is not running, continue with the remaining commands; that means the graceful stop already completed. The final output should report version 1.2.1 and `Autostart: enabled and running (system boot)`.
 
 ### Repair autostart after upgrading from 1.0.0
 

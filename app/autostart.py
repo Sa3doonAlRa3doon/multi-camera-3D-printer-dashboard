@@ -44,6 +44,9 @@ Environment={_systemd_quote(f"MCPD_HOME={root}")}
 ExecStart={_systemd_quote(python)} -m app
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+SendSIGKILL=yes
 
 [Install]
 WantedBy=multi-user.target

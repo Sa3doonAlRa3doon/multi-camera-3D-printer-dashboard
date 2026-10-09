@@ -27,6 +27,9 @@ def test_linux_autostart_is_boot_system_service_with_restart(tmp_path):
     assert "WantedBy=multi-user.target" in text
     assert "Restart=on-failure" in text
     assert "StartLimitIntervalSec=0" in text
+    assert "TimeoutStopSec=15" in text
+    assert "KillMode=control-group" in text
+    assert "SendSIGKILL=yes" in text
     assert "After=network-online.target" in text
     assert f"WorkingDirectory={tmp_path.resolve()}" in text
     assert 'WorkingDirectory="' not in text

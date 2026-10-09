@@ -6,11 +6,18 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import psutil
 
-from app.autostart import autostart_info, autostart_status, disable_autostart, enable_autostart
+from app.autostart import (
+    LINUX_SERVICE_NAME,
+    autostart_info,
+    autostart_status,
+    disable_autostart,
+    enable_autostart,
+)
 from app.config import ConfigStore, application_home
 from app.updater import NoUpdate, UpdateError, download_and_install, fetch_remote_version, update_available
 from app import __version__
@@ -24,19 +31,111 @@ def update_autostart(root: Path, enabled: bool, kind: str) -> None:
     store.save_settings(settings)
 
 
+def _result_text(result: subprocess.CompletedProcess[str]) -> str:
+    return (result.stderr or result.stdout or "").strip()
+
+
+def _linux_service_is_running() -> bool:
+    result = subprocess.run(
+        ["systemctl", "is-active", LINUX_SERVICE_NAME],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() in {"active", "activating", "deactivating", "reloading"}
+
+
+def _stop_linux_service() -> tuple[bool, str]:
+    """Stop systemd cleanly, then force the service down if streams block shutdown."""
+    command = ["sudo", "systemctl", "stop", LINUX_SERVICE_NAME]
+    timed_out = False
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=12,
+        )
+        if result.returncode != 0:
+            return False, _result_text(result) or "systemctl stop failed"
+    except subprocess.TimeoutExpired:
+        timed_out = True
+
+    if timed_out or _linux_service_is_running():
+        # A connected MJPEG/browser stream can keep an older Uvicorn process in
+        # graceful shutdown. The unit already has a stop job, so killing its
+        # remaining processes here does not trigger Restart=on-failure.
+        subprocess.run(
+            [
+                "sudo",
+                "systemctl",
+                "kill",
+                "--kill-who=all",
+                "--signal=SIGKILL",
+                LINUX_SERVICE_NAME,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        subprocess.run(
+            ["sudo", "systemctl", "stop", "--no-block", LINUX_SERVICE_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    for _ in range(20):
+        if not _linux_service_is_running():
+            return True, (
+                "Multi Camera Printer Dashboard systemd service stopped"
+                + (" after its graceful-shutdown timeout." if timed_out else ".")
+            )
+        time.sleep(0.25)
+    return False, (
+        "The systemd service is still active. Run: "
+        f"sudo systemctl status {LINUX_SERVICE_NAME} --no-pager --full"
+    )
+
+
 def stop_server(root: Path) -> int:
     pid_path = root / "data" / "server.pid"
-    if not pid_path.exists():
-        print("Multi Camera Printer Dashboard is not running (no PID file found).")
-        return 0
     try:
-        pid = int(pid_path.read_text(encoding="ascii").strip())
-        process = psutil.Process(pid)
-        command = " ".join(process.cmdline()).lower()
-        if "app" not in command and "multi-camera-printer-dashboard" not in command:
-            raise RuntimeError("PID file does not refer to Multi Camera Printer Dashboard; refusing to stop it.")
+        process = None
+        if pid_path.exists():
+            pid = int(pid_path.read_text(encoding="ascii").strip())
+            process = psutil.Process(pid)
+            command = " ".join(process.cmdline()).lower()
+            if "app" not in command and "multi-camera-printer-dashboard" not in command:
+                raise RuntimeError("PID file does not refer to Multi Camera Printer Dashboard; refusing to stop it.")
+
+        startup = autostart_info(root)
+        service_state = str(startup.get("service_state", ""))
+        if startup.get("platform") == "Linux" and service_state in {
+            "active", "activating", "deactivating", "reloading",
+        }:
+            ok, detail = _stop_linux_service()
+            if not ok:
+                raise RuntimeError(detail)
+            pid_path.unlink(missing_ok=True)
+            print(detail)
+            return 0
+
+        if process is None:
+            print("Multi Camera Printer Dashboard is not running (no PID file found).")
+            return 0
+
         process.terminate()
-        process.wait(timeout=10)
+        try:
+            process.wait(timeout=8)
+        except psutil.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+            print("Multi Camera Printer Dashboard required a forced stop after its graceful-shutdown timeout.")
+            pid_path.unlink(missing_ok=True)
+            return 0
+        pid_path.unlink(missing_ok=True)
         print("Multi Camera Printer Dashboard stopped.")
         return 0
     except psutil.NoSuchProcess:
@@ -113,7 +212,7 @@ def main() -> int:
     if args.command == "update":
         startup_before_update = autostart_info(root)
         linux_autostart = startup_before_update["platform"] == "Linux" and bool(startup_before_update["enabled"])
-        was_running = server_is_running(root)
+        was_running = server_is_running(root) or bool(startup_before_update.get("active"))
         if was_running and stop_server(root) != 0:
             return 1
         try:

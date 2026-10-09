@@ -92,7 +92,13 @@ def main() -> int:
         (root / "data").mkdir(parents=True, exist_ok=True)
         (root / "data" / "server.pid").write_text(str(os.getpid()), encoding="ascii")
         app = create_app(store, active_port=port)
-        config = uvicorn.Config(app, log_config=None, access_log=False, lifespan="on")
+        config = uvicorn.Config(
+            app,
+            log_config=None,
+            access_log=False,
+            lifespan="on",
+            timeout_graceful_shutdown=5,
+        )
         server = uvicorn.Server(config)
         server.run(sockets=[listener])
         return 0
