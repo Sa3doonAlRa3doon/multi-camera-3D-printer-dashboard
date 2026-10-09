@@ -8,11 +8,13 @@ import json
 import os
 import secrets
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 PBKDF2_ITERATIONS = 600_000
+MAX_USERS = 10
 
 
 def application_home() -> Path:
@@ -73,7 +75,11 @@ class ConfigStore:
                 raise FileNotFoundError(
                     f"Missing {self.settings_path}. Run the setup script before launching Multi Camera Printer Dashboard."
                 )
-            return json.loads(self.settings_path.read_text(encoding="utf-8"))
+            settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            migrated = migrate_users(settings)
+            if migrated != settings:
+                _atomic_json(self.settings_path, migrated)
+            return migrated
 
     def save_settings(self, settings: dict[str, Any]) -> None:
         with self._lock:
@@ -114,15 +120,70 @@ class ConfigStore:
 def new_settings(port: int, bind_host: str, username: str, password: str) -> dict[str, Any]:
     salt, digest = hash_password(password)
     return {
-        "version": 1,
+        "version": 2,
         "port": port,
         "bind_host": bind_host,
-        "username": username,
-        "password_salt": salt,
-        "password_hash": digest,
+        "users": [
+            {
+                "id": str(uuid.uuid4()),
+                "username": username.strip(),
+                "password_salt": salt,
+                "password_hash": digest,
+                "role": "admin",
+                "enabled": True,
+            }
+        ],
         "session_secret": secrets.token_urlsafe(48),
         "autostart": False,
         "autostart_kind": "none",
         "printer_dashboard_name": "3D Printer",
         "printer_dashboard_url": "",
+        "printer_api_url": "",
     }
+
+
+def migrate_users(settings: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade the legacy single-login settings without losing credentials."""
+    if isinstance(settings.get("users"), list) and settings["users"]:
+        return settings
+    username = str(settings.get("username", "")).strip()
+    salt = str(settings.get("password_salt", ""))
+    digest = str(settings.get("password_hash", ""))
+    if not username or not salt or not digest:
+        return settings
+    migrated = dict(settings)
+    migrated["version"] = max(2, int(migrated.get("version", 1) or 1))
+    migrated["users"] = [
+        {
+            "id": str(uuid.uuid4()),
+            "username": username,
+            "password_salt": salt,
+            "password_hash": digest,
+            "role": "admin",
+            "enabled": True,
+        }
+    ]
+    migrated.pop("username", None)
+    migrated.pop("password_salt", None)
+    migrated.pop("password_hash", None)
+    migrated.setdefault("printer_api_url", "")
+    return migrated
+
+
+def public_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(user["id"]),
+        "username": str(user.get("username", "")),
+        "role": "admin" if user.get("role") == "admin" else "viewer",
+        "enabled": bool(user.get("enabled", True)),
+    }
+
+
+def find_user(settings: dict[str, Any], *, user_id: str = "", username: str = "") -> dict[str, Any] | None:
+    wanted_name = username.strip().casefold()
+    for user in settings.get("users", []):
+        if user_id and str(user.get("id")) == user_id:
+            return user
+        if wanted_name and str(user.get("username", "")).strip().casefold() == wanted_name:
+            return user
+    return None

@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, status
 
 
 def signed_in(request: Request) -> bool:
-    return bool(request.session.get("authenticated"))
+    return bool(request.session.get("authenticated") and request.session.get("user_id"))
 
 
 def require_auth(request: Request) -> None:

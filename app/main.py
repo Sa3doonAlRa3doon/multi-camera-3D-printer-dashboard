@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__
-from .auth import csrf_token, require_auth, require_csrf, signed_in
+from .auth import csrf_token, require_csrf, signed_in
 from .autostart import (
     autostart_info,
     autostart_terminal_command,
@@ -25,7 +25,7 @@ from .autostart import (
     enable_autostart,
 )
 from .cameras import CameraManager, detect_usb_cameras, source_for_capture
-from .config import ConfigStore, verify_password
+from .config import MAX_USERS, ConfigStore, find_user, hash_password, public_user, verify_password
 from .network import lan_addresses, tailscale_addresses
 from .ports import INVALID_PORT_MESSAGE, automatic_port, is_port_available, is_valid_custom_port
 from .printer import PrinterStatusError, query_printer_status
@@ -69,6 +69,26 @@ class NetworkPayload(BaseModel):
 class PrinterPayload(BaseModel):
     name: str = Field(default="3D Printer", min_length=1, max_length=80)
     url: str = Field(default="", max_length=2048)
+    api_url: str = Field(default="", max_length=2048)
+
+
+class UserCreatePayload(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=8, max_length=256)
+    role: Literal["admin", "viewer"] = "viewer"
+    enabled: bool = True
+
+
+class UserUpdatePayload(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(default="", max_length=256)
+    role: Literal["admin", "viewer"] = "viewer"
+    enabled: bool = True
+
+
+class PasswordPayload(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 def _validated_printer_url(value: str) -> str:
@@ -92,6 +112,27 @@ def _validated_printer_url(value: str) -> str:
             detail="Do not put a username or password in the dashboard URL.",
         )
     return value
+
+
+def _validated_username(value: str) -> str:
+    username = value.strip()
+    if not username or any(character.isspace() for character in username):
+        raise HTTPException(status_code=422, detail="Username must not be empty or contain spaces.")
+    return username
+
+
+def _ensure_unique_username(users: list[dict], username: str, exclude_id: str = "") -> None:
+    wanted = username.casefold()
+    if any(
+        str(user.get("id")) != exclude_id
+        and str(user.get("username", "")).strip().casefold() == wanted
+        for user in users
+    ):
+        raise HTTPException(status_code=409, detail="That username is already in use.")
+
+
+def _enabled_admin_count(users: list[dict]) -> int:
+    return sum(1 for user in users if user.get("role") == "admin" and user.get("enabled", True))
 
 
 def _validated_camera(payload: CameraPayload, old: dict | None = None) -> dict:
@@ -158,6 +199,27 @@ def create_app(
     app.state.store = store
     app.state.manager = manager
 
+    def session_user(request: Request) -> dict:
+        user_id = str(request.session.get("user_id", ""))
+        user = find_user(store.load_settings(), user_id=user_id)
+        if not signed_in(request) or not user or not user.get("enabled", True):
+            request.session.clear()
+            raise HTTPException(status_code=401, detail="Sign in required")
+        return user
+
+    def admin_user(user: dict = Depends(session_user)) -> dict:
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Administrator access is required.")
+        return user
+
+    def session_csrf(request: Request, user: dict = Depends(session_user)) -> dict:
+        require_csrf(request)
+        return user
+
+    def admin_csrf(request: Request, user: dict = Depends(admin_user)) -> dict:
+        require_csrf(request)
+        return user
+
     def network_info(message: str = "") -> dict:
         current = store.load_settings()
         saved_port = int(current.get("port", 8080))
@@ -189,21 +251,22 @@ def create_app(
     @app.post("/login")
     async def login(request: Request, username: str = Form(), password: str = Form()):
         current = store.load_settings()
-        valid_user = username == current.get("username")
-        valid_password = verify_password(
+        user = find_user(current, username=username)
+        valid_password = bool(user) and verify_password(
             password,
-            str(current.get("password_salt", "")),
-            str(current.get("password_hash", "")),
+            str(user.get("password_salt", "")),
+            str(user.get("password_hash", "")),
         )
-        if not (valid_user and valid_password):
+        if not (user and user.get("enabled", True) and valid_password):
             return RedirectResponse("/login?error=Incorrect+username+or+password", status_code=303)
         request.session.clear()
         request.session["authenticated"] = True
+        request.session["user_id"] = str(user["id"])
         csrf_token(request)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/logout")
-    async def logout(request: Request, _: None = Depends(require_csrf)):
+    async def logout(request: Request, _: dict = Depends(session_csrf)):
         request.session.clear()
         return {"ok": True}
 
@@ -214,11 +277,105 @@ def create_app(
         return FileResponse(package_dir / "static" / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/session")
-    async def session(request: Request, _: None = Depends(require_auth)) -> dict:
-        return {"csrf_token": csrf_token(request), "version": __version__, "max_cameras": MAX_CAMERAS}
+    async def session(request: Request, user: dict = Depends(session_user)) -> dict:
+        return {
+            "csrf_token": csrf_token(request),
+            "version": __version__,
+            "max_cameras": MAX_CAMERAS,
+            "max_users": MAX_USERS,
+            "user": public_user(user),
+        }
+
+    @app.get("/api/users")
+    async def list_users(_: dict = Depends(admin_user)) -> dict:
+        users = store.load_settings().get("users", [])
+        return {"users": [public_user(user) for user in users], "max_users": MAX_USERS}
+
+    @app.post("/api/users", status_code=201)
+    async def add_user(payload: UserCreatePayload, _: dict = Depends(admin_csrf)) -> dict:
+        settings = store.load_settings()
+        users = settings.setdefault("users", [])
+        if len(users) >= MAX_USERS:
+            raise HTTPException(status_code=409, detail=f"This dashboard supports up to {MAX_USERS} accounts.")
+        username = _validated_username(payload.username)
+        _ensure_unique_username(users, username)
+        salt, digest = hash_password(payload.password)
+        user = {
+            "id": str(uuid.uuid4()),
+            "username": username,
+            "password_salt": salt,
+            "password_hash": digest,
+            "role": payload.role,
+            "enabled": payload.enabled,
+        }
+        users.append(user)
+        store.save_settings(settings)
+        return public_user(user)
+
+    @app.put("/api/users/{user_id}")
+    async def update_user(
+        user_id: str,
+        payload: UserUpdatePayload,
+        _: dict = Depends(admin_csrf),
+    ) -> dict:
+        settings = store.load_settings()
+        users = settings.setdefault("users", [])
+        user = next((candidate for candidate in users if str(candidate.get("id")) == user_id), None)
+        if not user:
+            raise HTTPException(status_code=404, detail="Account not found.")
+        username = _validated_username(payload.username)
+        _ensure_unique_username(users, username, user_id)
+        user["username"] = username
+        user["role"] = payload.role
+        user["enabled"] = payload.enabled
+        if payload.password:
+            if len(payload.password) < 8:
+                raise HTTPException(status_code=422, detail="Passwords must contain at least 8 characters.")
+            user["password_salt"], user["password_hash"] = hash_password(payload.password)
+        if _enabled_admin_count(users) < 1:
+            raise HTTPException(status_code=409, detail="At least one enabled administrator account is required.")
+        store.save_settings(settings)
+        return public_user(user)
+
+    @app.delete("/api/users/{user_id}", status_code=204)
+    async def delete_user(
+        user_id: str,
+        request: Request,
+        _: dict = Depends(admin_csrf),
+    ) -> None:
+        if str(request.session.get("user_id", "")) == user_id:
+            raise HTTPException(status_code=409, detail="Sign in with another administrator before deleting this account.")
+        settings = store.load_settings()
+        users = settings.setdefault("users", [])
+        remaining = [user for user in users if str(user.get("id")) != user_id]
+        if len(remaining) == len(users):
+            raise HTTPException(status_code=404, detail="Account not found.")
+        if _enabled_admin_count(remaining) < 1:
+            raise HTTPException(status_code=409, detail="At least one enabled administrator account is required.")
+        settings["users"] = remaining
+        store.save_settings(settings)
+
+    @app.post("/api/account/password")
+    async def change_own_password(
+        payload: PasswordPayload,
+        user: dict = Depends(session_csrf),
+    ) -> dict:
+        if not verify_password(
+            payload.current_password,
+            str(user.get("password_salt", "")),
+            str(user.get("password_hash", "")),
+        ):
+            raise HTTPException(status_code=403, detail="The current password is incorrect.")
+        settings = store.load_settings()
+        saved = find_user(settings, user_id=str(user["id"]))
+        if not saved:
+            raise HTTPException(status_code=404, detail="Account not found.")
+        saved["password_salt"], saved["password_hash"] = hash_password(payload.new_password)
+        store.save_settings(settings)
+        return {"ok": True, "message": "Password changed."}
 
     @app.get("/api/cameras")
-    async def list_cameras(_: None = Depends(require_auth)) -> list[dict]:
+    async def list_cameras(_: dict = Depends(session_user)) -> list[dict]:
         cameras = store.load_cameras()
         manager.sync(cameras)
         statuses = manager.statuses()
@@ -230,11 +387,11 @@ def create_app(
         return result
 
     @app.get("/api/autostart")
-    async def get_autostart(_: None = Depends(require_auth)) -> dict:
+    async def get_autostart(_: dict = Depends(session_user)) -> dict:
         return autostart_info(store.root)
 
     @app.post("/api/autostart")
-    async def set_autostart(payload: AutostartPayload, _: None = Depends(require_csrf)) -> dict:
+    async def set_autostart(payload: AutostartPayload, _: dict = Depends(admin_csrf)) -> dict:
         root = store.root
         if payload.enabled:
             ok, detail = await run_in_threadpool(
@@ -270,47 +427,53 @@ def create_app(
         }
 
     @app.get("/api/network")
-    async def get_network(_: None = Depends(require_auth)) -> dict:
+    async def get_network(_: dict = Depends(session_user)) -> dict:
         return network_info()
 
     @app.get("/api/printer")
-    async def get_printer(_: None = Depends(require_auth)) -> dict:
+    async def get_printer(_: dict = Depends(session_user)) -> dict:
         current = store.load_settings()
         url = str(current.get("printer_dashboard_url", ""))
         return {
             "name": str(current.get("printer_dashboard_name", "3D Printer")),
             "url": url,
+            "api_url": str(current.get("printer_api_url", "")),
             "configured": bool(url),
         }
 
     @app.post("/api/printer")
-    async def set_printer(payload: PrinterPayload, _: None = Depends(require_csrf)) -> dict:
+    async def set_printer(payload: PrinterPayload, _: dict = Depends(admin_csrf)) -> dict:
         current = store.load_settings()
         url = _validated_printer_url(payload.url)
+        api_url = _validated_printer_url(payload.api_url)
         current["printer_dashboard_name"] = payload.name.strip()
         current["printer_dashboard_url"] = url
+        current["printer_api_url"] = api_url
         store.save_settings(current)
         return {
             "name": current["printer_dashboard_name"],
             "url": url,
+            "api_url": api_url,
             "configured": bool(url),
         }
 
     @app.get("/api/printer/status")
-    async def get_printer_status(_: None = Depends(require_auth)) -> dict:
-        dashboard_url = str(store.load_settings().get("printer_dashboard_url", ""))
+    async def get_printer_status(_: dict = Depends(session_user)) -> dict:
+        current = store.load_settings()
+        dashboard_url = str(current.get("printer_dashboard_url", ""))
+        api_url = str(current.get("printer_api_url", ""))
         if not dashboard_url:
             return {
                 "available": False,
                 "error": "Configure the Fluidd/Moonraker dashboard URL before using layer timelapse.",
             }
         try:
-            return await run_in_threadpool(lambda: query_printer_status(dashboard_url))
+            return await run_in_threadpool(lambda: query_printer_status(dashboard_url, api_url))
         except PrinterStatusError as exc:
             return {"available": False, "error": str(exc)}
 
     @app.post("/api/network")
-    async def set_network(payload: NetworkPayload, _: None = Depends(require_csrf)) -> dict:
+    async def set_network(payload: NetworkPayload, _: dict = Depends(admin_csrf)) -> dict:
         current = store.load_settings()
         bind_host = str(current.get("bind_host", "0.0.0.0"))
         if payload.mode == "automatic":
@@ -335,7 +498,7 @@ def create_app(
         return network_info(message)
 
     @app.post("/api/cameras", status_code=201)
-    async def add_camera(payload: CameraPayload, _: None = Depends(require_csrf)) -> dict:
+    async def add_camera(payload: CameraPayload, _: dict = Depends(admin_csrf)) -> dict:
         cameras = store.load_cameras()
         if len(cameras) >= MAX_CAMERAS:
             raise HTTPException(
@@ -349,7 +512,7 @@ def create_app(
         return store.public_camera(camera)
 
     @app.put("/api/cameras/{camera_id}")
-    async def update_camera(camera_id: str, payload: CameraPayload, _: None = Depends(require_csrf)) -> dict:
+    async def update_camera(camera_id: str, payload: CameraPayload, _: dict = Depends(admin_csrf)) -> dict:
         cameras = store.load_cameras()
         index = next((i for i, camera in enumerate(cameras) if str(camera["id"]) == camera_id), None)
         if index is None:
@@ -361,7 +524,7 @@ def create_app(
         return store.public_camera(camera)
 
     @app.delete("/api/cameras/{camera_id}", status_code=204)
-    async def delete_camera(camera_id: str, _: None = Depends(require_csrf)) -> None:
+    async def delete_camera(camera_id: str, _: dict = Depends(admin_csrf)) -> None:
         cameras = store.load_cameras()
         remaining = [camera for camera in cameras if str(camera["id"]) != camera_id]
         if len(remaining) == len(cameras):
@@ -370,11 +533,11 @@ def create_app(
         manager.sync(remaining)
 
     @app.get("/api/detect-usb")
-    async def detect(_: None = Depends(require_auth)) -> list[dict[str, str]]:
+    async def detect(_: dict = Depends(admin_user)) -> list[dict[str, str]]:
         return await run_in_threadpool(detect_usb_cameras)
 
     @app.get("/api/cameras/{camera_id}/stream")
-    async def stream_camera(camera_id: str, _: None = Depends(require_auth)):
+    async def stream_camera(camera_id: str, _: dict = Depends(session_user)):
         cameras = store.load_cameras()
         if not any(str(camera["id"]) == camera_id and camera.get("enabled", True) for camera in cameras):
             raise HTTPException(status_code=404, detail="Camera not found or disabled")
