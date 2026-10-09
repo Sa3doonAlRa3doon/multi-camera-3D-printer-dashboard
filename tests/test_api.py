@@ -124,12 +124,17 @@ def test_printer_dashboard_settings_are_private_authenticated_and_validated(tmp_
     try:
         saved = client.post(
             "/api/printer",
-            json={"name": "K2 Plus", "url": "http://printer.local:4408/#/"},
+            json={
+                "name": "K2 Plus",
+                "url": "http://printer.local:4408/#/",
+                "api_url": "http://printer.local:7125/",
+            },
             headers=headers,
         )
         assert saved.status_code == 200
         assert saved.json()["configured"] is True
         assert store.load_settings()["printer_dashboard_url"] == "http://printer.local:4408/#/"
+        assert store.load_settings()["printer_api_url"] == "http://printer.local:7125/"
         assert client.get("/api/printer").json()["name"] == "K2 Plus"
 
         invalid = client.post(
@@ -158,7 +163,7 @@ def test_printer_layer_status_uses_private_dashboard_configuration(monkeypatch, 
         monkeypatch.setattr(
             main_module,
             "query_printer_status",
-            lambda url: seen.append(url) or {
+            lambda url, api_url: seen.append((url, api_url)) or {
                 "available": True,
                 "state": "printing",
                 "filename": "part.gcode",
@@ -170,7 +175,7 @@ def test_printer_layer_status_uses_private_dashboard_configuration(monkeypatch, 
         response = client.get("/api/printer/status")
         assert response.status_code == 200
         assert response.json()["current_layer"] == 7
-        assert seen == ["http://printer.local:4408/#/"]
+        assert seen == [("http://printer.local:4408/#/", "")]
         assert headers
     finally:
         client.__exit__(None, None, None)
@@ -302,5 +307,103 @@ def test_network_settings_can_choose_an_available_port_automatically(monkeypatch
         assert response.status_code == 200
         assert response.json()["saved_port"] == 2020
         assert store.load_settings()["port"] == 2020
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_admin_can_manage_accounts_and_viewer_cannot_manage_settings(tmp_path):
+    store, client, headers = authenticated_client(tmp_path)
+    try:
+        created = client.post(
+            "/api/users",
+            json={"username": "CameraViewer", "password": "viewer-pass", "role": "viewer", "enabled": True},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        viewer = created.json()
+        assert viewer["role"] == "viewer"
+        assert "password" not in str(viewer).lower()
+        assert client.get("/api/users").json()["max_users"] == 10
+
+        client.post("/logout", headers=headers)
+        assert client.post(
+            "/login",
+            data={"username": "cameraviewer", "password": "viewer-pass"},
+            follow_redirects=False,
+        ).status_code == 303
+        session = client.get("/api/session").json()
+        assert session["user"]["id"] == viewer["id"]
+        viewer_headers = {"X-CSRF-Token": session["csrf_token"]}
+        denied = client.post(
+            "/api/cameras",
+            json={"name": "Nope", "source_type": "usb", "source": "0"},
+            headers=viewer_headers,
+        )
+        assert denied.status_code == 403
+        assert client.get("/api/users").status_code == 403
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_user_can_change_own_password(tmp_path):
+    _, client, headers = authenticated_client(tmp_path)
+    try:
+        wrong = client.post(
+            "/api/account/password",
+            json={"current_password": "wrong", "new_password": "replacement-pass"},
+            headers=headers,
+        )
+        assert wrong.status_code == 403
+        changed = client.post(
+            "/api/account/password",
+            json={"current_password": "password123", "new_password": "replacement-pass"},
+            headers=headers,
+        )
+        assert changed.status_code == 200
+        client.post("/logout", headers=headers)
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "password123"},
+            follow_redirects=False,
+        ).headers["location"].startswith("/login")
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "replacement-pass"},
+            follow_redirects=False,
+        ).headers["location"] == "/"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_last_enabled_admin_is_protected_and_account_limit_is_ten(tmp_path):
+    store, client, headers = authenticated_client(tmp_path)
+    try:
+        admin = client.get("/api/session").json()["user"]
+        demote = client.put(
+            f"/api/users/{admin['id']}",
+            json={"username": "admin", "password": "", "role": "viewer", "enabled": True},
+            headers=headers,
+        )
+        assert demote.status_code == 409
+
+        settings = store.load_settings()
+        template = settings["users"][0]
+        for index in range(2, 11):
+            settings["users"].append(
+                {
+                    **template,
+                    "id": f"user-{index}",
+                    "username": f"viewer{index}",
+                    "role": "viewer",
+                }
+            )
+        store.save_settings(settings)
+        rejected = client.post(
+            "/api/users",
+            json={"username": "eleventh", "password": "password11", "role": "viewer", "enabled": True},
+            headers=headers,
+        )
+        assert rejected.status_code == 409
+        assert "up to 10 accounts" in rejected.json()["detail"]
     finally:
         client.__exit__(None, None, None)

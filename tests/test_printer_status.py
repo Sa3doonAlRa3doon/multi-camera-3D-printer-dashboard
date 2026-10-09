@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from app.printer import PrinterStatusError, moonraker_status_url, query_printer_status
+from urllib.error import URLError
+
+from app.printer import PrinterStatusError, moonraker_status_url, moonraker_status_urls, query_printer_status
 
 
 class FakeResponse:
@@ -54,7 +56,9 @@ def test_moonraker_print_stats_are_normalized_for_layer_timelapse():
         "filename": "part.gcode",
         "current_layer": 42,
         "total_layer": 120,
+        "z_height": None,
         "layer_supported": True,
+        "layer_source": "native",
     }
 
 
@@ -77,6 +81,46 @@ def test_missing_layer_is_reported_without_inventing_one():
     )
     assert status["current_layer"] is None
     assert status["layer_supported"] is False
+
+
+def test_z_height_is_used_when_firmware_returns_null_layers():
+    status = query_printer_status(
+        "http://printer.local:4408/",
+        opener=lambda *_args, **_kwargs: FakeResponse(
+            {
+                "result": {
+                    "status": {
+                        "print_stats": {
+                            "state": "printing",
+                            "filename": "part.gcode",
+                            "z_pos": 3.437691,
+                            "info": {"current_layer": None, "total_layer": None},
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    assert status["current_layer"] is None
+    assert status["z_height"] == 3.4377
+    assert status["layer_supported"] is True
+    assert status["layer_source"] == "z_height"
+
+
+def test_auto_endpoint_falls_back_from_dashboard_to_port_7125():
+    requested = []
+
+    def opener(request, **_kwargs):
+        requested.append(request.full_url)
+        if ":4408/" in request.full_url:
+            raise URLError("proxy unavailable")
+        return FakeResponse(
+            {"result": {"status": {"print_stats": {"state": "standby", "info": {}}}}}
+        )
+
+    status = query_printer_status("http://printer.local:4408/#/", opener=opener)
+    assert status["available"] is True
+    assert requested == moonraker_status_urls("http://printer.local:4408/#/")
 
 
 def test_non_moonraker_response_has_actionable_error():

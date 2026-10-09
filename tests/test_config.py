@@ -1,6 +1,6 @@
 import json
 
-from app.config import ConfigStore, new_settings, verify_password
+from app.config import ConfigStore, find_user, new_settings, verify_password
 
 
 def test_settings_and_cameras_survive_a_new_store_instance(tmp_path):
@@ -13,10 +13,34 @@ def test_settings_and_cameras_survive_a_new_store_instance(tmp_path):
     restored = ConfigStore(tmp_path)
     assert restored.load_settings()["port"] == 8080
     assert restored.load_cameras() == cameras
-    assert verify_password("strong-password", settings["password_salt"], settings["password_hash"])
-    assert not verify_password("wrong", settings["password_salt"], settings["password_hash"])
+    admin = find_user(settings, username="ADMIN")
+    assert admin is not None
+    assert verify_password("strong-password", admin["password_salt"], admin["password_hash"])
+    assert not verify_password("wrong", admin["password_salt"], admin["password_hash"])
     assert settings["printer_dashboard_url"] == ""
     assert settings["printer_dashboard_name"] == "3D Printer"
+    assert settings["printer_api_url"] == ""
+
+
+def test_legacy_single_login_is_migrated_without_changing_password(tmp_path):
+    store = ConfigStore(tmp_path)
+    current = new_settings(8080, "0.0.0.0", "admin", "legacy-pass")
+    admin = current["users"][0]
+    legacy = {
+        **{key: value for key, value in current.items() if key != "users"},
+        "version": 1,
+        "username": admin["username"],
+        "password_salt": admin["password_salt"],
+        "password_hash": admin["password_hash"],
+    }
+    store.save_settings(legacy)
+
+    migrated = store.load_settings()
+    user = migrated["users"][0]
+    assert user["username"] == "admin"
+    assert user["role"] == "admin"
+    assert verify_password("legacy-pass", user["password_salt"], user["password_hash"])
+    assert "password_hash" not in {key: value for key, value in migrated.items() if key != "users"}
 
 
 def test_public_camera_redacts_credentials_and_query_values(tmp_path):

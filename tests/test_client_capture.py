@@ -27,9 +27,10 @@ def test_camera_cards_offer_browser_side_timelapse_with_saved_controls():
     assert "captureTimelapseFrame" in javascript
     assert "updateLayerTimelapse" in javascript
     assert 'api("/api/printer/status")' in javascript
-    assert "layer > active.lastLayer" in javascript
+    assert "nativeLayer > active.lastLayer" in javascript
+    assert "usableZ > active.highestZ + 0.05" in javascript
     assert "drawTimelapseFrame" in javascript
-    assert "timelapse-${timestamp()}.webm" in javascript
+    assert "videoExtension(mimeType, format.extension)" in javascript
 
 
 def test_printer_dashboard_has_protected_configurable_embed_and_fallback():
