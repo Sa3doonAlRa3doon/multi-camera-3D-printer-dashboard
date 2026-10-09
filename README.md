@@ -4,7 +4,7 @@
 
 Multi Camera Printer Dashboard is a self-hosted, password-protected camera and 3D-printer workspace for Windows, Raspberry Pi OS, and desktop Linux. It displays up to six USB or network cameras at once, records screenshots/video/timelapses on the device viewing the page, and can embed a configurable printer web dashboard in a second tab.
 
-Version: **1.1.0**
+Version: **1.2.0**
 
 ## Features
 
@@ -13,15 +13,16 @@ Version: **1.1.0**
 - USB webcams plus compatible RTSP, HTTP/MJPEG, and OpenCV-readable stream URLs.
 - Per-camera output resolution, FPS limit, 90°/180°/270° rotation, and horizontal/vertical flip.
 - Independent capture workers with automatic reconnection, so one disconnected camera does not interrupt the others.
-- Browser-side JPEG screenshots, WebM video recordings, timed timelapses, and Fluidd/Moonraker layer timelapses. These files download to the laptop, phone, or tablet viewing the page—not to the Pi/server.
+- Browser-side JPEG screenshots, WebM/MP4 video recordings, timed timelapses, and Fluidd/Moonraker layer timelapses. These files download to the laptop, phone, or tablet viewing the page—not to the Pi/server.
 - Integrated 3D-printer dashboard tab with a full-page fallback when the printer UI blocks iframe embedding.
+- Up to 10 private user accounts with administrator/viewer roles, editable usernames, enable/disable controls, password reset, and self-service password changes.
 - Saved camera, printer, port, authentication, and startup settings.
 - Authenticated LAN and Tailscale access using actual detected addresses.
 - Interactive setup, manual launchers, Windows Task Scheduler startup, Linux systemd startup, and a data-preserving updater.
 
 ## Important security behavior
 
-Camera credentials, stream URLs, the printer dashboard URL, the login password hash, logs, and runtime data are excluded from Git and stored under the installation folder. Never commit `config/`, `data/`, `logs/`, `backups/`, or `.env` files. Do not put a printer username or password inside its URL.
+Camera credentials, stream URLs, printer URLs, account password hashes, logs, and runtime data are excluded from Git and stored under the installation folder. Never commit `config/`, `data/`, `logs/`, `backups/`, or `.env` files. Do not put a printer username or password inside its URL.
 
 The built-in web server uses HTTP. Authentication protects the page and APIs, but HTTP does not encrypt traffic. Use only a trusted LAN or a private Tailscale network. See [SECURITY.md](SECURITY.md).
 
@@ -125,13 +126,25 @@ The server asks USB drivers for the selected size/FPS when supported, then appli
 
 Compatibility depends on the camera, authentication scheme, codec, and OpenCV/FFmpeg backend. RTSP H.264 and MJPEG sources are commonly usable; H.265 support varies. Audio is not supported.
 
+## User accounts
+
+The first setup login is the initial administrator. Open **Settings → User accounts** to add, rename, enable, disable, reset, or remove accounts. The dashboard supports up to 10 accounts, so four separate logins can be created without sharing a password.
+
+- **Administrator** accounts can manage cameras, printer URLs, startup, port, and accounts.
+- **Viewer** accounts can view cameras/printer information and create screenshots, recordings, and timelapses on their own viewing device, but cannot change server settings.
+- Every signed-in user can change their own password under **Settings → My password**.
+- Usernames are unique without regard to uppercase/lowercase. Passwords require at least eight characters.
+- The final enabled administrator cannot be disabled, demoted, or removed. An administrator cannot delete the account currently being used; sign in as another administrator first.
+
+Upgrading from version 1.1.0 or earlier automatically converts the existing login into the first administrator without changing its username or password. Account records and password hashes remain in private `config/settings.json` and are never returned by the public repository.
+
 ## Screenshot, normal video, and timelapse
 
 Each camera card offers:
 
 - **Screenshot**: downloads a timestamped JPEG.
-- **Record**: starts a continuous browser-side WebM recording. Select **Stop & save** to download it.
-- **Timelapse**: captures one JPEG frame for every new printer layer by default, or uses a chosen time interval. Frames remain in browser memory until the print completes or **Stop & save** is selected, then a WebM timelapse downloads.
+- **Record**: starts a continuous browser-side recording. Select **Stop & save** to download a WebM or MP4 file, depending on the viewing browser's supported encoder.
+- **Timelapse**: captures one JPEG frame for every new printer layer by default, or uses a chosen time interval. Frames remain in browser memory until the print completes or **Stop & save** is selected, then a supported WebM/MP4 timelapse downloads.
 - **Fullscreen**: expands one camera.
 
 Timelapse defaults are under **Settings → Timelapse defaults**:
@@ -141,9 +154,9 @@ Timelapse defaults are under **Settings → Timelapse defaults**:
 - Playback speed: 1 through 60 FPS; default 30.
 - Maximum frames: 60 through 10,000; default 3,000.
 
-Layer mode polls the configured Fluidd/Moonraker dashboard once per second and captures only when `print_stats.info.current_layer` increases. Duplicate updates and paused states do not create frames. Completion, cancellation, or a print error automatically finishes and downloads any captured timelapse. Starting midway through a print captures the current layer and then each following layer.
+Layer mode polls Moonraker once per second. It uses `print_stats.info.current_layer` when the firmware supplies it. If the firmware returns a null layer number but supplies `print_stats.z_pos`, the dashboard automatically captures once for each new maximum Z height; this is the compatibility path used by some Creality firmware. Duplicate values and paused states do not create frames. Completion, cancellation, or a print error automatically finishes and downloads any captured timelapse. Starting midway through a print captures the current layer/height and then each following increase.
 
-Fluidd must show a current layer. If it does not, configure the slicer to send layer statistics. For OrcaSlicer, add this to **Machine start G-code**:
+Native layer numbers are more exact than the Z-height fallback, especially for unusual spiral/vase or Z-hop jobs. For OrcaSlicer, native layer statistics can be enabled by adding this to **Machine start G-code**:
 
 ```gcode
 SET_PRINT_STATS_INFO TOTAL_LAYER=[total_layer_count]
@@ -171,7 +184,7 @@ http://printer-ip:4408/#/
 
 Select the **3D printer** tab to load it. **Reload** refreshes the embedded page, and **Open full page** opens the printer's own interface directly.
 
-Layer timelapse uses the same saved dashboard origin to query Moonraker at `/printer/objects/query?print_stats`. The Raspberry Pi or computer running this application must be able to reach that printer address. No printer IP address is hard-coded into the public repository.
+Layer timelapse first tries the saved dashboard origin at `/printer/objects/query?print_stats`, then automatically tries Moonraker on the same host at port `7125`. If the printer uses another address or port, enter its base URL under **Moonraker API URL** and select **Test layer connection**. The Raspberry Pi or computer running this application must be able to reach that API address. No printer IP address is hard-coded into the public repository.
 
 Some printer dashboards send `X-Frame-Options` or Content Security Policy headers that prohibit embedding. The application cannot override the printer's browser security policy; if the frame is blank or reports that it refused to connect, use **Open full page**. Camera streams and capture continue independently.
 
@@ -198,7 +211,7 @@ Everything stays under the selected installation folder:
 | --- | --- |
 | `app/` | Application code and browser interface |
 | `.venv/` | Private Python environment |
-| `config/settings.json` | Port, password hash, printer URL, and startup preference |
+| `config/settings.json` | Port, private account hashes/roles, printer URLs, and startup preference |
 | `data/cameras.json` | Camera definitions and credentials |
 | `logs/multi-camera-printer-dashboard.log` | Rotating runtime log |
 | `backups/` | Automatic pre-upgrade code and private-data ZIP backups |
@@ -227,7 +240,7 @@ Raspberry Pi OS/Linux:
 ./.venv/bin/python manage.py update
 ```
 
-The updater checks this repository's `VERSION`, downloads and validates the release source, creates backups, replaces program files only, installs dependencies, and restarts the previous run mode. It never replaces `config/`, `data/`, or `logs/`. If dependency installation fails, it restores the previous code. Camera settings, credentials, printer URL, port, and login data therefore survive upgrades.
+The updater checks this repository's `VERSION`, downloads and validates the release source, creates backups, replaces program files only, installs dependencies, and restarts the previous run mode. It never replaces `config/`, `data/`, or `logs/`. If dependency installation fails, it restores the previous code. Camera settings, credentials, printer URLs, port, and every account therefore survive upgrades.
 
 Maintainers must increase `VERSION` using `major.minor.patch` and publish the matching code in the same commit.
 
@@ -267,9 +280,11 @@ Raspberry Pi OS/Linux:
 - **Camera busy:** close video-call or camera applications that may already own the USB device.
 - **High Pi CPU/network use:** lower camera output resolution/FPS, use network-camera substreams, or show fewer feeds. Each active stream is decoded and encoded as MJPEG.
 - **Printer frame blank/refused:** use **Open full page**; the printer UI probably blocks iframe embedding.
+- **Layer timelapse cannot connect:** open **Settings → 3D printer dashboard**, leave Moonraker API URL blank for automatic dashboard/port-7125 detection, then select **Test layer connection**. If needed, enter the printer's explicit Moonraker base URL such as `http://printer-address:7125/`.
+- **Layer number is null:** version 1.2.0 automatically uses increasing Z height. Native slicer `SET_PRINT_STATS_INFO` layer commands are still recommended for exact layer counting.
 - **Printer unavailable over Tailscale:** make its address reachable through Tailscale or an approved subnet route; the application does not proxy the printer.
 - **No Tailscale URL:** connect Tailscale on the server and viewing device, then restart the application.
-- **Recording/timelapse unavailable:** use a current Chrome, Edge, Chromium, or Firefox browser with MediaRecorder/canvas capture support.
+- **Recording/timelapse unavailable:** use a current Chrome, Edge, Chromium, Firefox, or Safari browser with MediaRecorder/canvas capture support. The app detects WebM/MP4 support, waits for final encoder data, rejects empty files, and shows the downloaded file size.
 - **Saved port changed:** the original port was occupied at launch; read the startup output/log for the selected fallback.
 - **Linux autostart inactive:** run `./.venv/bin/python manage.py enable-autostart`, then inspect `sudo systemctl status multi-camera-printer-dashboard.service --no-pager --full` and `sudo journalctl -u multi-camera-printer-dashboard.service -n 100 --no-pager`.
 
@@ -322,9 +337,9 @@ python -m compileall -q app setup.py manage.py
 node --check app/static/app.js
 ```
 
-The automated suite verifies exact port rules/fallback, saved settings, authentication/CSRF, credential redaction, camera CRUD and six-camera enforcement, simultaneous capture workers, reconnection, video transforms, browser capture controls, Moonraker layer normalization and protected status routing, private printer settings and URL validation, autostart definitions/status/repair, startup information, and data-preserving upgrades. GitHub Actions runs Python tests on Windows and Ubuntu.
+The automated suite verifies exact port rules/fallback, saved settings, legacy-login migration, multi-user roles/limits/password changes, authentication/CSRF, credential redaction, camera CRUD and six-camera enforcement, simultaneous capture workers, reconnection, video transforms, browser capture controls, Moonraker native-layer/Z-height normalization and port-7125 fallback, private printer settings and URL validation, autostart definitions/status/repair, startup information, and data-preserving upgrades. GitHub Actions runs Python tests on Windows and Ubuntu.
 
-Development verification cannot simulate every physical Raspberry Pi boot, USB driver, RTSP vendor, codec, Tailscale policy/subnet route, browser download rule, multi-hour timelapse, or printer firmware UI. Those hardware- and network-specific cases must be tested on the target devices. The supplied local printer address was not reachable from the development environment, so Moonraker responses and layer transitions are covered with deterministic tests without claiming a live print test on that printer.
+Development verification cannot simulate every physical Raspberry Pi boot, USB driver, RTSP vendor, codec, Tailscale policy/subnet route, browser download rule, multi-hour timelapse, or printer firmware UI. Those hardware- and network-specific cases must be tested on the target devices. During version 1.2.0 diagnosis, the configured live Moonraker endpoint was reachable and reported an active print with a null native layer plus a valid Z height; the fallback parsing is also covered with deterministic tests. The upgraded build still requires installation on the target Pi before claiming a full multi-layer hardware run.
 
 ## License
 
