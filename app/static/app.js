@@ -6,7 +6,10 @@ const state = {
   autostart: null,
   network: null,
   printer: null,
+  currentUser: null,
+  users: [],
   maxCameras: 6,
+  maxUsers: 10,
   view: "cameras",
   hidden: new Set(JSON.parse(localStorage.getItem("hiddenCameras") || "[]")),
 };
@@ -15,6 +18,7 @@ const timelapses = new Map();
 const $ = (selector) => document.querySelector(selector);
 const grid = $("#camera-grid");
 const dialog = $("#camera-dialog");
+const accountDialog = $("#account-dialog");
 
 async function api(url, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -80,9 +84,19 @@ function captureCanvas(image) {
   return canvas;
 }
 
-function supportedVideoType() {
-  return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
-    .find(type => MediaRecorder.isTypeSupported(type));
+function supportedVideoFormat() {
+  const choices = [
+    { mimeType: "video/webm;codecs=vp9", extension: "webm" },
+    { mimeType: "video/webm;codecs=vp8", extension: "webm" },
+    { mimeType: "video/webm", extension: "webm" },
+    { mimeType: "video/mp4;codecs=avc1.42E01E", extension: "mp4" },
+    { mimeType: "video/mp4", extension: "mp4" },
+  ];
+  return choices.find(format => MediaRecorder.isTypeSupported(format.mimeType)) || { mimeType: "", extension: "webm" };
+}
+
+function videoExtension(mimeType, fallback = "webm") {
+  return String(mimeType || "").toLowerCase().includes("mp4") ? "mp4" : fallback;
 }
 
 function saveScreenshot(camera, image) {
@@ -99,7 +113,11 @@ function saveScreenshot(camera, image) {
 
 function finishRecording(cameraId) {
   const active = recordings.get(cameraId);
-  if (active && active.recorder.state !== "inactive") active.recorder.stop();
+  if (!active || active.recorder.state === "inactive") return;
+  active.button.textContent = "Saving…";
+  active.button.disabled = true;
+  try { active.recorder.requestData(); } catch (_) { /* stop still flushes the final chunk */ }
+  active.recorder.stop();
 }
 
 function toggleRecording(camera, image, button) {
@@ -110,9 +128,9 @@ function toggleRecording(camera, image, button) {
   try { canvas = captureCanvas(image); } catch (error) { return showToast(error.message); }
   if (typeof canvas.captureStream !== "function") return showToast("Canvas recording is not supported by this browser.");
   const stream = canvas.captureStream(15);
-  const supported = supportedVideoType();
+  const format = supportedVideoFormat();
   let recorder;
-  try { recorder = new MediaRecorder(stream, supported ? { mimeType: supported } : undefined); }
+  try { recorder = new MediaRecorder(stream, format.mimeType ? { mimeType: format.mimeType } : undefined); }
   catch (_) { return showToast("This browser could not start a recording."); }
   const chunks = [];
   const draw = () => {
@@ -126,12 +144,19 @@ function toggleRecording(camera, image, button) {
     recordings.delete(camera.id);
     button.textContent = "Record";
     button.classList.remove("recording");
+    button.disabled = false;
     if (!chunks.length) return showToast("The recording did not contain any video data.");
-    const filename = `${safeFilename(camera.name)}-${timestamp()}.webm`;
-    downloadBlob(new Blob(chunks, { type: recorder.mimeType || "video/webm" }), filename);
-    showToast(`Recording saved on this viewing device: ${filename}`);
+    const mimeType = recorder.mimeType || format.mimeType || "video/webm";
+    const blob = new Blob(chunks, { type: mimeType });
+    if (!blob.size) return showToast("Recording failed: the browser produced an empty video file.");
+    const filename = `${safeFilename(camera.name)}-${timestamp()}.${videoExtension(mimeType, format.extension)}`;
+    downloadBlob(blob, filename);
+    showToast(`Recording saved on this viewing device: ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB)`);
   });
-  recordings.set(camera.id, { recorder, timer });
+  recorder.addEventListener("error", event => {
+    showToast(`Recording failed: ${event.error?.message || "the browser encoder stopped unexpectedly."}`);
+  });
+  recordings.set(camera.id, { recorder, timer, button });
   button.textContent = "Stop & save";
   button.classList.add("recording");
   recorder.start(1000);
@@ -235,9 +260,9 @@ async function finishTimelapse(cameraId) {
   canvas.width = active.width;
   canvas.height = active.height;
   const stream = canvas.captureStream(active.options.playbackFps);
-  const supported = supportedVideoType();
+  const format = supportedVideoFormat();
   let recorder;
-  try { recorder = new MediaRecorder(stream, supported ? { mimeType: supported } : undefined); }
+  try { recorder = new MediaRecorder(stream, format.mimeType ? { mimeType: format.mimeType } : undefined); }
   catch (_) {
     stream.getTracks().forEach(track => track.stop());
     timelapses.delete(cameraId);
@@ -247,23 +272,32 @@ async function finishTimelapse(cameraId) {
   const chunks = [];
   recorder.addEventListener("dataavailable", event => { if (event.data.size) chunks.push(event.data); });
   const stopped = new Promise(resolve => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.start(1000);
+  const started = new Promise(resolve => recorder.addEventListener("start", resolve, { once: true }));
+  recorder.start();
+  await started;
   const context = canvas.getContext("2d");
   const frameDelay = 1000 / active.options.playbackFps;
+  const track = stream.getVideoTracks()[0];
   showToast(`Creating a ${active.frames.length}-frame timelapse on this viewing device…`);
   for (const frame of active.frames) {
     await drawTimelapseFrame(frame, context, canvas);
+    if (typeof track?.requestFrame === "function") track.requestFrame();
     await new Promise(resolve => setTimeout(resolve, frameDelay));
   }
+  await new Promise(resolve => setTimeout(resolve, Math.max(250, frameDelay)));
+  try { recorder.requestData(); } catch (_) { /* stop flushes the final chunk */ }
   recorder.stop();
   await stopped;
   stream.getTracks().forEach(track => track.stop());
   timelapses.delete(cameraId);
   updateTimelapseButton(cameraId);
   if (!chunks.length) return showToast("The timelapse did not contain any video data.");
-  const filename = `${safeFilename(active.camera.name)}-timelapse-${timestamp()}.webm`;
-  downloadBlob(new Blob(chunks, { type: recorder.mimeType || "video/webm" }), filename);
-  showToast(`Timelapse saved on this viewing device: ${filename}`);
+  const mimeType = recorder.mimeType || format.mimeType || "video/webm";
+  const blob = new Blob(chunks, { type: mimeType });
+  if (!blob.size) return showToast("Timelapse failed: the browser produced an empty video file.");
+  const filename = `${safeFilename(active.camera.name)}-timelapse-${timestamp()}.${videoExtension(mimeType, format.extension)}`;
+  downloadBlob(blob, filename);
+  showToast(`Timelapse saved on this viewing device: ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB)`);
 }
 
 async function updateLayerTimelapse(active, suppliedStatus = null) {
@@ -280,22 +314,41 @@ async function updateLayerTimelapse(active, suppliedStatus = null) {
     const stateName = String(status.state || "unknown").toLowerCase();
     if (stateName === "printing") {
       active.hasSeenPrinting = true;
-      const layer = Number(status.current_layer);
-      if (!Number.isInteger(layer) || layer < 0) {
+      const layer = status.current_layer === null || status.current_layer === undefined
+        ? null
+        : Number(status.current_layer);
+      const nativeLayer = Number.isInteger(layer) && layer >= 0 ? layer : null;
+      const zHeight = status.z_height === null || status.z_height === undefined
+        ? null
+        : Number(status.z_height);
+      const usableZ = Number.isFinite(zHeight) && zHeight >= 0 ? zHeight : null;
+      if (nativeLayer === null && usableZ === null) {
         if (!active.layerWarningShown) {
-          showToast("The printer is not reporting its current layer. Add SET_PRINT_STATS_INFO layer commands in the slicer.");
+          showToast("The printer is not reporting a layer number or Z height. Use interval timelapse for this firmware.");
           active.layerWarningShown = true;
         }
         return;
       }
-      active.layerWarningShown = false;
       const newPrint = active.filename && status.filename && active.filename !== status.filename;
-      const layerReset = active.lastLayer !== null && layer < active.lastLayer;
-      if (newPrint || layerReset) active.lastLayer = null;
+      const layerReset = nativeLayer !== null && active.lastLayer !== null && nativeLayer < active.lastLayer;
+      if (newPrint || layerReset) {
+        active.lastLayer = null;
+        active.highestZ = null;
+      }
       active.filename = status.filename || active.filename;
-      if (active.lastLayer === null || layer > active.lastLayer) {
-        if (!active.captureBusy) {
-          active.lastLayer = layer;
+      if (nativeLayer !== null) {
+        active.layerWarningShown = false;
+        if ((active.lastLayer === null || nativeLayer > active.lastLayer) && !active.captureBusy) {
+          active.lastLayer = nativeLayer;
+          captureTimelapseFrame(active);
+        }
+      } else {
+        if (!active.layerWarningShown) {
+          showToast("Layer numbers are unavailable; timelapse is using each new maximum Z height as a layer change.");
+          active.layerWarningShown = true;
+        }
+        if ((active.highestZ === null || usableZ > active.highestZ + 0.05) && !active.captureBusy) {
+          active.highestZ = usableZ;
           captureTimelapseFrame(active);
         }
       }
@@ -327,7 +380,7 @@ async function toggleTimelapse(camera, image) {
   }
   const active = {
     camera, image, options, frames: [], timer: null, captureBusy: false, finishing: false,
-    width: 0, height: 0, layerPollBusy: false, lastLayer: null, filename: "",
+    width: 0, height: 0, layerPollBusy: false, lastLayer: null, highestZ: null, filename: "",
     hasSeenPrinting: false, statusWarningShown: false, layerWarningShown: false,
   };
   timelapses.set(camera.id, active);
@@ -493,6 +546,7 @@ function renderPrinter(info) {
   state.printer = info;
   $("#printer-name").value = info.name || "3D Printer";
   $("#printer-url").value = info.url || "";
+  $("#printer-api-url").value = info.api_url || "";
   $("#printer-title").textContent = info.name || "3D Printer";
   $("#printer-view-button").textContent = info.name || "3D printer";
   $("#printer-empty").hidden = info.configured;
@@ -524,6 +578,7 @@ async function savePrinter(clear = false) {
       body: JSON.stringify({
         name: $("#printer-name").value || "3D Printer",
         url: clear ? "" : $("#printer-url").value,
+        api_url: clear ? "" : $("#printer-api-url").value,
       }),
     });
     renderPrinter(info);
@@ -532,13 +587,123 @@ async function savePrinter(clear = false) {
   finally { button.disabled = false; }
 }
 
+async function testPrinterConnection() {
+  const button = $("#printer-test");
+  button.disabled = true;
+  $("#printer-status").textContent = "Testing Moonraker layer data…";
+  try {
+    const status = await api("/api/printer/status");
+    if (!status.available) throw new Error(status.error || "Printer status is unavailable.");
+    const detail = status.layer_source === "native"
+      ? `native layer ${status.current_layer}${status.total_layer === null ? "" : ` of ${status.total_layer}`}`
+      : status.layer_source === "z_height"
+        ? `Z-height fallback at ${status.z_height} mm`
+        : "no usable layer or Z-height data";
+    $("#printer-status").textContent = `Connected. Printer state: ${status.state}; ${detail}.`;
+  } catch (error) { $("#printer-status").textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+function isAdmin() { return state.currentUser?.role === "admin"; }
+
+function applyPermissions() {
+  document.querySelectorAll("[data-admin-only]").forEach(element => { element.hidden = !isAdmin(); });
+  $("#printer-configure").hidden = !isAdmin();
+  $("#signed-in-user").textContent = `${state.currentUser?.username || "account"} (${state.currentUser?.role || "viewer"})`;
+}
+
+function renderUsers() {
+  const list = $("#account-list");
+  list.replaceChildren();
+  for (const user of state.users) {
+    const row = document.createElement("div"); row.className = "setting-account";
+    const meta = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = user.username;
+    const detail = document.createElement("small");
+    detail.textContent = `${user.role === "admin" ? "Administrator" : "Viewer"} · ${user.enabled ? "enabled" : "disabled"}${user.id === state.currentUser?.id ? " · current account" : ""}`;
+    meta.append(name, document.createElement("br"), detail);
+    const actions = document.createElement("div"); actions.className = "setting-actions";
+    const edit = document.createElement("button"); edit.textContent = "Edit / reset password"; edit.addEventListener("click", () => openAccountDialog(user));
+    const remove = document.createElement("button"); remove.textContent = "Remove"; remove.className = "danger"; remove.disabled = user.id === state.currentUser?.id; remove.addEventListener("click", () => removeUser(user));
+    actions.append(edit, remove); row.append(meta, actions); list.append(row);
+  }
+  $("#account-limit").textContent = `${state.users.length} of ${state.maxUsers} accounts configured`;
+  $("#account-add").disabled = state.users.length >= state.maxUsers;
+}
+
+async function refreshUsers() {
+  if (!isAdmin()) return;
+  try {
+    const data = await api("/api/users");
+    state.users = data.users;
+    state.maxUsers = data.max_users || 10;
+    renderUsers();
+  } catch (error) { $("#account-status").textContent = error.message; }
+}
+
+function openAccountDialog(user = null) {
+  if (!user && state.users.length >= state.maxUsers) return showToast(`This dashboard supports up to ${state.maxUsers} accounts.`);
+  $("#account-form").reset();
+  $("#account-form-error").textContent = "";
+  $("#account-id").value = user?.id || "";
+  $("#account-dialog-title").textContent = user ? "Edit account" : "Add account";
+  $("#account-username").value = user?.username || "";
+  $("#account-password").required = !user;
+  $("#account-password-hint").textContent = user ? "leave blank to keep the current password" : "at least 8 characters";
+  $("#account-role").value = user?.role || "viewer";
+  $("#account-enabled").checked = user?.enabled ?? true;
+  accountDialog.showModal();
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const id = $("#account-id").value;
+  const payload = {
+    username: $("#account-username").value,
+    password: $("#account-password").value,
+    role: $("#account-role").value,
+    enabled: $("#account-enabled").checked,
+  };
+  try {
+    const saved = await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    if (saved.id === state.currentUser?.id) state.currentUser = saved;
+    accountDialog.close();
+    applyPermissions();
+    await refreshUsers();
+    showToast(id ? "Account updated." : "Account added.");
+  } catch (error) { $("#account-form-error").textContent = error.message; }
+}
+
+async function removeUser(user) {
+  if (!confirm(`Remove account “${user.username}”?`)) return;
+  try {
+    await api(`/api/users/${user.id}`, { method: "DELETE" });
+    await refreshUsers();
+    showToast("Account removed.");
+  } catch (error) { $("#account-status").textContent = error.message; }
+}
+
+async function changeOwnPassword() {
+  const currentPassword = $("#current-password").value;
+  const newPassword = $("#new-password").value;
+  const confirmation = $("#confirm-password").value;
+  if (newPassword.length < 8) return $("#password-status").textContent = "The new password must contain at least 8 characters.";
+  if (newPassword !== confirmation) return $("#password-status").textContent = "The two new-password entries do not match.";
+  try {
+    await api("/api/account/password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
+    $("#current-password").value = $("#new-password").value = $("#confirm-password").value = "";
+    $("#password-status").textContent = "Password changed successfully.";
+    showToast("Your password was changed.");
+  } catch (error) { $("#password-status").textContent = error.message; }
+}
+
 function showView(view) {
   state.view = view;
   const cameras = view === "cameras";
   $("#camera-view").hidden = !cameras;
   $("#printer-view").hidden = cameras;
   $("#grid-control").hidden = !cameras;
-  $("#add-camera").hidden = !cameras;
+  $("#add-camera").hidden = !cameras || !isAdmin();
   $("#cameras-view-button").classList.toggle("selected", cameras);
   $("#printer-view-button").classList.toggle("selected", !cameras);
   localStorage.setItem("dashboardView", view);
@@ -653,7 +818,13 @@ async function detectUsb() {
 
 async function initialise() {
   try {
-    const session = await api("/api/session"); state.csrf = session.csrf_token; state.maxCameras = session.max_cameras || 6; $("#version").textContent = `v${session.version}`;
+    const session = await api("/api/session");
+    state.csrf = session.csrf_token;
+    state.maxCameras = session.max_cameras || 6;
+    state.maxUsers = session.max_users || 10;
+    state.currentUser = session.user;
+    $("#version").textContent = `v${session.version}`;
+    applyPermissions();
     const savedColumns = Number(localStorage.getItem("gridColumns") || 2); $("#grid-size").value = String(savedColumns); document.documentElement.style.setProperty("--grid-columns", savedColumns); $("#grid-output").textContent = `${savedColumns} column${savedColumns === 1 ? "" : "s"}`;
     let savedTimelapse = {};
     try { savedTimelapse = JSON.parse(localStorage.getItem("timelapseOptions") || "{}"); } catch (_) { /* keep defaults */ }
@@ -662,7 +833,9 @@ async function initialise() {
     $("#timelapse-fps").value = String(savedTimelapse.playbackFps || 30);
     $("#timelapse-max-frames").value = String(savedTimelapse.maxFrames || 3000);
     saveTimelapseOptions();
-    await Promise.all([refreshCameras(true), refreshAutostart(), refreshNetwork(), refreshPrinter()]);
+    const startupTasks = [refreshCameras(true), refreshAutostart(), refreshNetwork(), refreshPrinter()];
+    if (isAdmin()) startupTasks.push(refreshUsers());
+    await Promise.all(startupTasks);
     showView(localStorage.getItem("dashboardView") === "printer" ? "printer" : "cameras");
     setInterval(() => refreshCameras().catch(console.error), 2500);
   } catch (error) { console.error(error); }
@@ -677,8 +850,14 @@ $("#autostart-auto").addEventListener("click", () => changeAutostart(true)); $("
 $("#network-save").addEventListener("click", () => saveNetwork("custom")); $("#network-auto").addEventListener("click", () => saveNetwork("automatic")); $("#network-refresh").addEventListener("click", refreshNetwork);
 for (const control of [$("#timelapse-mode"), $("#timelapse-interval"), $("#timelapse-fps"), $("#timelapse-max-frames")]) control.addEventListener("change", saveTimelapseOptions);
 $("#printer-save").addEventListener("click", () => savePrinter(false)); $("#printer-clear").addEventListener("click", () => savePrinter(true));
+$("#printer-test").addEventListener("click", testPrinterConnection);
 $("#printer-configure").addEventListener("click", () => setDrawer(true));
 $("#printer-reload").addEventListener("click", () => { if (state.printer?.url) $("#printer-frame").src = state.printer.url; });
+$("#account-add").addEventListener("click", () => openAccountDialog());
+$("#account-form").addEventListener("submit", saveUser);
+$("#account-dialog-close").addEventListener("click", () => accountDialog.close());
+$("#account-dialog-cancel").addEventListener("click", () => accountDialog.close());
+$("#change-password").addEventListener("click", changeOwnPassword);
 $("#detect-usb").addEventListener("click", detectUsb); $("#logout").addEventListener("click", async () => { await api("/logout", { method: "POST" }); location.href = "/login"; });
 window.addEventListener("beforeunload", event => {
   if (!recordings.size && !timelapses.size) return;

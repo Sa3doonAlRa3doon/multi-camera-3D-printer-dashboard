@@ -19,7 +19,7 @@
         <button id="printer-view-button" type="button">3D printer</button>
       </div>
       <label id="grid-control" class="grid-control">Grid <input id="grid-size" type="range" min="1" max="4" value="2"><output id="grid-output">2 columns</output></label>
-      <button id="add-camera" class="primary">Add camera</button>
+      <button id="add-camera" class="primary" data-admin-only>Add camera</button>
       <button id="settings-toggle" aria-expanded="false" aria-controls="settings">Settings</button>
     </div>
   </header>
@@ -29,7 +29,7 @@
       <div class="empty-icon">＋</div>
       <h1>Add your first camera</h1>
       <p>Connect a USB camera or add an RTSP, HTTP, or MJPEG stream URL.</p>
-      <button class="primary" data-add-camera>Add camera</button>
+      <button class="primary" data-add-camera data-admin-only>Add camera</button>
     </div>
     <section id="camera-grid" class="camera-grid" aria-live="polite"></section>
   </main>
@@ -52,13 +52,13 @@
 
   <aside id="settings" class="drawer" aria-hidden="true">
     <div class="drawer-head"><div><h2>Dashboard settings</h2><p>Configure cameras, capture, printer, startup, and network access.</p></div><button id="settings-close" class="icon-button" aria-label="Close settings">×</button></div>
-    <p id="camera-limit" class="camera-limit">0 of 6 cameras configured</p>
-    <button id="detect-usb" class="wide">Detect USB cameras</button>
-    <div id="detected-list" class="detected-list"></div>
-    <div id="camera-list" class="camera-list"></div>
+    <p id="camera-limit" class="camera-limit" data-admin-only>0 of 6 cameras configured</p>
+    <button id="detect-usb" class="wide" data-admin-only>Detect USB cameras</button>
+    <div id="detected-list" class="detected-list" data-admin-only></div>
+    <div id="camera-list" class="camera-list" data-admin-only></div>
     <section class="capture-settings" aria-labelledby="capture-title">
       <h3 id="capture-title">Timelapse defaults</h3>
-      <p>Timelapse frames stay in this browser until the print completes or Stop &amp; save creates a WebM download on this viewing device.</p>
+      <p>Timelapse frames stay in this browser until the print completes or Stop &amp; save creates a supported video download on this viewing device.</p>
       <label>Capture trigger
         <select id="timelapse-mode">
           <option value="layer" selected>Every printer layer</option>
@@ -72,15 +72,17 @@
       <label>Maximum frames<input id="timelapse-max-frames" type="number" min="60" max="10000" step="1" value="3000"></label>
       <p id="timelapse-mode-help" class="help">Layer mode reads the configured Fluidd/Moonraker dashboard and captures exactly once when its current layer changes. The browser tab must remain open.</p>
     </section>
-    <section class="printer-settings" aria-labelledby="printer-settings-title">
+    <section class="printer-settings" aria-labelledby="printer-settings-title" data-admin-only>
       <h3 id="printer-settings-title">3D printer dashboard</h3>
       <p>The URL is saved only in this installation's private configuration. Do not include credentials in it.</p>
       <label>Printer name<input id="printer-name" maxlength="80" placeholder="3D Printer"></label>
       <label>Dashboard URL<input id="printer-url" maxlength="2048" inputmode="url" placeholder="http://printer-ip:4408/#/"></label>
+      <label>Moonraker API URL <span class="label-hint">optional; Auto tries the dashboard then port 7125</span><input id="printer-api-url" maxlength="2048" inputmode="url" placeholder="http://printer-ip:7125/"></label>
       <div class="network-actions"><button id="printer-save" type="button" class="primary">Save printer</button><button id="printer-clear" type="button">Clear</button></div>
+      <button id="printer-test" type="button" class="wide ghost">Test layer connection</button>
       <p id="printer-status" class="help" role="status"></p>
     </section>
-    <section class="startup-settings" aria-labelledby="startup-title">
+    <section class="startup-settings" aria-labelledby="startup-title" data-admin-only>
       <h3 id="startup-title">Automatic startup</h3>
       <p id="autostart-description">Checking the current startup mode…</p>
       <div class="startup-options" role="group" aria-label="Startup mode">
@@ -94,7 +96,7 @@
       </div>
       <button id="autostart-refresh" type="button" class="wide ghost">Refresh startup status</button>
     </section>
-    <section class="network-settings" aria-labelledby="network-title">
+    <section class="network-settings" aria-labelledby="network-title" data-admin-only>
       <h3 id="network-title">Network access</h3>
       <p>The IP address identifies the device. The port is the four-digit number after the colon, such as <code>1010</code>.</p>
       <label>Saved preferred port<input id="network-port" type="text" inputmode="numeric" minlength="4" maxlength="4" pattern="[0-9]{4}" placeholder="1010"></label>
@@ -110,6 +112,23 @@
       </div>
       <p class="help">The viewer listens on all interfaces so LAN and Tailscale work together. For a permanent LAN IP, reserve the Pi's address in your router. Tailscale must already be installed and connected.</p>
       <button id="network-refresh" type="button" class="wide ghost">Refresh addresses</button>
+    </section>
+    <section class="account-settings" aria-labelledby="accounts-title" data-admin-only>
+      <h3 id="accounts-title">User accounts</h3>
+      <p>Create separate administrator or viewer logins. Up to 10 accounts are stored only in this installation's private configuration.</p>
+      <p id="account-limit" class="camera-limit">0 of 10 accounts configured</p>
+      <div id="account-list" class="account-list"></div>
+      <button id="account-add" type="button" class="wide">Add account</button>
+      <p id="account-status" class="help" role="status"></p>
+    </section>
+    <section class="account-settings" aria-labelledby="my-password-title">
+      <h3 id="my-password-title">My password</h3>
+      <p>Signed in as <strong id="signed-in-user"></strong>. Passwords must contain at least 8 characters.</p>
+      <label>Current password<input id="current-password" type="password" autocomplete="current-password"></label>
+      <label>New password<input id="new-password" type="password" minlength="8" autocomplete="new-password"></label>
+      <label>Confirm new password<input id="confirm-password" type="password" minlength="8" autocomplete="new-password"></label>
+      <button id="change-password" type="button" class="wide">Change my password</button>
+      <p id="password-status" class="help" role="status"></p>
     </section>
     <div class="drawer-footer"><button id="logout" class="danger ghost">Sign out</button></div>
   </aside>
@@ -170,6 +189,19 @@
       <label class="check"><input id="camera-enabled" type="checkbox" checked> Camera enabled</label>
       <p id="form-error" class="error" role="alert"></p>
       <div class="dialog-actions"><button type="button" id="dialog-cancel">Cancel</button><button type="submit" class="primary">Save camera</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="account-dialog">
+    <form id="account-form" method="dialog">
+      <div class="dialog-head"><div><h2 id="account-dialog-title">Add account</h2><p>Passwords are hashed and stay in private configuration.</p></div><button type="button" id="account-dialog-close" class="icon-button" aria-label="Close">×</button></div>
+      <input id="account-id" type="hidden">
+      <label>Username<input id="account-username" maxlength="64" autocomplete="off" required></label>
+      <label>Password <span id="account-password-hint" class="label-hint">at least 8 characters</span><input id="account-password" type="password" minlength="8" maxlength="256" autocomplete="new-password"></label>
+      <label>Access level<select id="account-role"><option value="viewer">Viewer — cameras, recording, timelapse</option><option value="admin">Administrator — all settings and accounts</option></select></label>
+      <label class="check"><input id="account-enabled" type="checkbox" checked> Account enabled</label>
+      <p id="account-form-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="account-dialog-cancel">Cancel</button><button type="submit" class="primary">Save account</button></div>
     </form>
   </dialog>
 
