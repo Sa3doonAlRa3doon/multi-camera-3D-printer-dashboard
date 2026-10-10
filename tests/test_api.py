@@ -181,6 +181,45 @@ def test_printer_layer_status_uses_private_dashboard_configuration(monkeypatch, 
         client.__exit__(None, None, None)
 
 
+def test_printer_event_stream_pushes_each_poll_without_browser_timer(monkeypatch):
+    statuses = iter(
+        [
+            {"available": True, "state": "printing", "current_layer": None, "z_height": 8.442},
+            {"available": True, "state": "printing", "current_layer": None, "z_height": 8.722},
+        ]
+    )
+
+    class Request:
+        disconnected = False
+
+        async def is_disconnected(self):
+            return self.disconnected
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(main_module.asyncio, "sleep", no_wait)
+
+    async def collect():
+        request = Request()
+        events = main_module.printer_event_stream(
+            request,
+            "http://printer.local:4408/#/",
+            "",
+            query=lambda _url, _api_url: next(statuses),
+        )
+        first = await anext(events)
+        second = await anext(events)
+        request.disconnected = True
+        await events.aclose()
+        return first, second
+
+    first, second = __import__("asyncio").run(collect())
+    assert '"z_height":8.442' in first
+    assert '"z_height":8.722' in second
+    assert first.startswith("data: ") and first.endswith("\n\n")
+
+
 def test_autostart_can_be_changed_from_authenticated_settings(monkeypatch, tmp_path):
     current = {"enabled": False}
 

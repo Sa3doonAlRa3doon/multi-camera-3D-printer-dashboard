@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 import platform
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -31,6 +34,29 @@ from .ports import INVALID_PORT_MESSAGE, automatic_port, is_port_available, is_v
 from .printer import PrinterStatusError, query_printer_status
 
 MAX_CAMERAS = 6
+
+
+async def printer_event_stream(
+    request: Request,
+    dashboard_url: str,
+    api_url: str,
+    query: Callable[[str, str], dict] = query_printer_status,
+    poll_seconds: float = 0.5,
+) -> AsyncIterator[str]:
+    """Continuously push normalized printer status without relying on browser timers."""
+    while not await request.is_disconnected():
+        if not dashboard_url:
+            status = {
+                "available": False,
+                "error": "Configure the Fluidd/Moonraker dashboard URL before using layer timelapse.",
+            }
+        else:
+            try:
+                status = await run_in_threadpool(lambda: query(dashboard_url, api_url))
+            except PrinterStatusError as exc:
+                status = {"available": False, "error": str(exc)}
+        yield f"data: {json.dumps(status, separators=(',', ':'))}\n\n"
+        await asyncio.sleep(poll_seconds)
 
 
 class CameraPayload(BaseModel):
@@ -471,6 +497,22 @@ def create_app(
             return await run_in_threadpool(lambda: query_printer_status(dashboard_url, api_url))
         except PrinterStatusError as exc:
             return {"available": False, "error": str(exc)}
+
+    @app.get("/api/printer/events")
+    async def printer_events(request: Request, _: dict = Depends(session_user)):
+        """Push printer changes from the Pi so background-tab timer throttling loses no polls."""
+        current = store.load_settings()
+        dashboard_url = str(current.get("printer_dashboard_url", ""))
+        api_url = str(current.get("printer_api_url", ""))
+        return StreamingResponse(
+            printer_event_stream(request, dashboard_url, api_url),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.post("/api/network")
     async def set_network(payload: NetworkPayload, _: dict = Depends(admin_csrf)) -> dict:

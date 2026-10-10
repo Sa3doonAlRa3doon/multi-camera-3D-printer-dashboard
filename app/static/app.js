@@ -244,6 +244,7 @@ async function finishTimelapse(cameraId) {
   if (!active || active.finishing) return;
   active.finishing = true;
   clearInterval(active.timer);
+  if (active.eventSource) active.eventSource.close();
   updateTimelapseButton(cameraId);
   while (active.captureBusy) await new Promise(resolve => setTimeout(resolve, 25));
   if (!active.frames.length) {
@@ -298,6 +299,44 @@ async function finishTimelapse(cameraId) {
   const filename = `${safeFilename(active.camera.name)}-timelapse-${timestamp()}.${videoExtension(mimeType, format.extension)}`;
   downloadBlob(blob, filename);
   showToast(`Timelapse saved on this viewing device: ${filename} (${Math.max(1, Math.round(blob.size / 1024))} KB)`);
+}
+
+function startLayerEventStream(active) {
+  const startPollingFallback = () => {
+    if (!active.timer) active.timer = setInterval(() => updateLayerTimelapse(active), 1000);
+  };
+  if (typeof EventSource === "undefined") return startPollingFallback();
+  const events = new EventSource("/api/printer/events");
+  active.eventSource = events;
+  events.addEventListener("message", event => {
+    if (active.finishing || !timelapses.has(active.camera.id)) return;
+    try { updateLayerTimelapse(active, JSON.parse(event.data)); }
+    catch (_) { /* a later server event or fallback poll will retry */ }
+  });
+  events.addEventListener("open", () => {
+    active.eventStreamConnected = true;
+    if (active.timer) {
+      clearInterval(active.timer);
+      active.timer = null;
+    }
+  });
+  events.addEventListener("error", () => {
+    active.eventStreamConnected = false;
+    startPollingFallback();
+  });
+}
+
+async function initialPrinterStatus() {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const status = await api("/api/printer/status");
+      if (status.available) return status;
+      lastError = new Error(status.error || "Printer layer status is unavailable.");
+    } catch (error) { lastError = error; }
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 750));
+  }
+  throw lastError || new Error("Printer layer status is unavailable.");
 }
 
 async function updateLayerTimelapse(active, suppliedStatus = null) {
@@ -374,27 +413,27 @@ async function toggleTimelapse(camera, image) {
   const options = timelapseOptions();
   let printerStatus = null;
   if (options.mode === "layer") {
-    try { printerStatus = await api("/api/printer/status"); }
+    try { printerStatus = await initialPrinterStatus(); }
     catch (error) { return showToast(`Printer status: ${error.message}`); }
-    if (!printerStatus.available) return showToast(printerStatus.error || "Printer layer status is unavailable.");
   }
   const active = {
     camera, image, options, frames: [], timer: null, captureBusy: false, finishing: false,
     width: 0, height: 0, layerPollBusy: false, lastLayer: null, highestZ: null, filename: "",
     hasSeenPrinting: false, statusWarningShown: false, layerWarningShown: false,
+    eventSource: null, eventStreamConnected: false,
   };
   timelapses.set(camera.id, active);
   if (options.mode === "layer") {
     await updateLayerTimelapse(active, printerStatus);
     if (!timelapses.has(camera.id)) return;
-    active.timer = setInterval(() => updateLayerTimelapse(active), 1000);
+    startLayerEventStream(active);
   } else {
     captureTimelapseFrame(active);
     active.timer = setInterval(() => captureTimelapseFrame(active), options.intervalSeconds * 1000);
   }
   updateTimelapseButton(camera.id);
   showToast(options.mode === "layer"
-    ? "Layer timelapse armed: one frame per printer layer. Keep this page open."
+    ? "Layer timelapse armed: the Pi is watching layer changes continuously. Keep this page open."
     : `Timelapse started: one frame every ${options.intervalSeconds} seconds. Keep this page open.`);
 }
 

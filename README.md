@@ -4,7 +4,7 @@
 
 Multi Camera Printer Dashboard is a self-hosted, password-protected camera and 3D-printer workspace for Windows, Raspberry Pi OS, and desktop Linux. It displays up to six USB or network cameras at once, records screenshots/video/timelapses on the device viewing the page, and can embed a configurable printer web dashboard in a second tab.
 
-Version: **1.2.1**
+Version: **1.2.2**
 
 ## Features
 
@@ -154,7 +154,7 @@ Timelapse defaults are under **Settings → Timelapse defaults**:
 - Playback speed: 1 through 60 FPS; default 30.
 - Maximum frames: 60 through 10,000; default 3,000.
 
-Layer mode polls Moonraker once per second. It uses `print_stats.info.current_layer` when the firmware supplies it. If the firmware returns a null layer number but supplies `print_stats.z_pos`, the dashboard automatically captures once for each new maximum Z height; this is the compatibility path used by some Creality firmware. Duplicate values and paused states do not create frames. Completion, cancellation, or a print error automatically finishes and downloads any captured timelapse. Starting midway through a print captures the current layer/height and then each following increase.
+Layer mode uses a server-sent event stream: the Pi polls Moonraker twice per second and immediately pushes changes to the viewing browser. This avoids background-tab timer throttling while every image frame remains in the browser and the final file still downloads to the laptop, phone, or tablet—not the Pi. It uses `print_stats.info.current_layer` when the firmware supplies it. If the firmware returns a null layer number but supplies `print_stats.z_pos`, the dashboard captures once for each observed new maximum Z height; this is the compatibility path used by some Creality firmware. Duplicate values and paused states do not create frames. Completion, cancellation, or a print error automatically finishes and downloads any captured timelapse. Starting midway through a print captures the current layer/height and then each following increase.
 
 Native layer numbers are more exact than the Z-height fallback, especially for unusual spiral/vase or Z-hop jobs. For OrcaSlicer, native layer statistics can be enabled by adding this to **Machine start G-code**:
 
@@ -282,6 +282,7 @@ Raspberry Pi OS/Linux:
 - **Printer frame blank/refused:** use **Open full page**; the printer UI probably blocks iframe embedding.
 - **Layer timelapse cannot connect:** open **Settings → 3D printer dashboard**, leave Moonraker API URL blank for automatic dashboard/port-7125 detection, then select **Test layer connection**. If needed, enter the printer's explicit Moonraker base URL such as `http://printer-address:7125/`.
 - **Layer number is null:** version 1.2.0 automatically uses increasing Z height. Native slicer `SET_PRINT_STATS_INFO` layer commands are still recommended for exact layer counting.
+- **Frame count pauses while the dashboard is in the background:** upgrade to version 1.2.2. Its authenticated server-sent layer event stream keeps Moonraker polling on the Pi instead of relying on a throttled browser timer. The browser tab must remain open because frames and the finished file still stay on the viewing device.
 - **Printer unavailable over Tailscale:** make its address reachable through Tailscale or an approved subnet route; the application does not proxy the printer.
 - **No Tailscale URL:** connect Tailscale on the server and viewing device, then restart the application.
 - **Recording/timelapse unavailable:** use a current Chrome, Edge, Chromium, Firefox, or Safari browser with MediaRecorder/canvas capture support. The app detects WebM/MP4 support, waits for final encoder data, rejects empty files, and shows the downloaded file size.
